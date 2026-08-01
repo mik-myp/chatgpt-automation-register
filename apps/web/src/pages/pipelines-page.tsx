@@ -354,7 +354,7 @@ function CreatePipelineDialog({ defaultEmail }: { defaultEmail: string }) {
             onClick={() =>
               mutation.mutate({
                 mode,
-                email: "",
+                email: mode === "single" ? defaultEmail : "",
                 target_count: mode === "single" ? 1 : targetCount,
                 concurrency:
                   mode === "batch" ? numberOrNull(concurrency) : null,
@@ -682,10 +682,6 @@ export function PipelineRunPage() {
       refetchInterval: 2000,
     },
   })
-  const activeRun =
-    run.data?.status === PipelineStatus.queued ||
-    run.data?.status === PipelineStatus.running ||
-    run.data?.status === PipelineStatus.paused
   const events = useQuery({
     queryKey: ["/api/pipelines/runs", runId, "events"],
     queryFn: () =>
@@ -702,7 +698,7 @@ export function PipelineRunPage() {
         last_sequence: number
         terminal: boolean
       }>(`/api/pipelines/runs/${encodeURIComponent(runId)}/events?limit=500`),
-    enabled: Boolean(runId) && activeRun,
+    enabled: Boolean(runId),
     refetchInterval: (query) => (query.state.data?.terminal ? false : 1000),
   })
   const taskParams = {
@@ -866,7 +862,7 @@ export function PipelineRunPage() {
           <TabsTrigger value="items">注册项</TabsTrigger>
           <TabsTrigger value="kakao">Kakao 任务</TabsTrigger>
           <TabsTrigger value="cards">卡密分配</TabsTrigger>
-          {activeRun && <TabsTrigger value="events">实时日志</TabsTrigger>}
+          <TabsTrigger value="events">运行日志</TabsTrigger>
         </TabsList>
         <TabsContent
           value="items"
@@ -1247,40 +1243,38 @@ export function PipelineRunPage() {
           />
         </TabsContent>
 
-        {activeRun && (
-          <TabsContent
-            value="events"
-            className="mt-3 min-h-0 flex-1 overflow-auto border-t"
-          >
-            <div className="divide-y font-mono text-xs">
-              {(events.data?.items ?? []).map((event) => (
-                <div
-                  className="grid grid-cols-[72px_80px_minmax(0,1fr)] gap-3 px-2 py-2"
-                  key={event.id}
+        <TabsContent
+          value="events"
+          className="mt-3 min-h-0 flex-1 overflow-auto border-t"
+        >
+          <div className="divide-y font-mono text-xs">
+            {(events.data?.items ?? []).map((event) => (
+              <div
+                className="grid grid-cols-[72px_80px_minmax(0,1fr)] gap-3 px-2 py-2"
+                key={event.id}
+              >
+                <span className="text-muted-foreground">
+                  {DATE_FORMATTER.format(new Date(event.created_at))}
+                </span>
+                <span
+                  className={
+                    event.level === "error"
+                      ? "text-destructive"
+                      : "text-muted-foreground"
+                  }
                 >
-                  <span className="text-muted-foreground">
-                    {DATE_FORMATTER.format(new Date(event.created_at))}
-                  </span>
-                  <span
-                    className={
-                      event.level === "error"
-                        ? "text-destructive"
-                        : "text-muted-foreground"
-                    }
-                  >
-                    {event.event_type}
-                  </span>
-                  <span className="whitespace-pre-wrap">{event.message}</span>
-                </div>
-              ))}
-              {!events.isLoading && !events.data?.items.length && (
-                <div className="py-16 text-center text-muted-foreground">
-                  暂无运行日志
-                </div>
-              )}
-            </div>
-          </TabsContent>
-        )}
+                  {event.event_type}
+                </span>
+                <span className="whitespace-pre-wrap">{event.message}</span>
+              </div>
+            ))}
+            {!events.isLoading && !events.data?.items.length && (
+              <div className="py-16 text-center text-muted-foreground">
+                暂无运行日志
+              </div>
+            )}
+          </div>
+        </TabsContent>
       </Tabs>
       <Dialog open={taskDetailOpen} onOpenChange={setTaskDetailOpen}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-3xl">

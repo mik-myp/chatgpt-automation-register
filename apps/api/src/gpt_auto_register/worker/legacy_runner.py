@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import traceback
@@ -86,8 +87,7 @@ def _register(payload: dict[str, Any]) -> dict[str, Any]:
     sms = _sms_callback(payload.get("sms", {}))
     flow = AuthFlow(config, sms_callback=sms)
     password_mode = str(
-        options.get("password_mode")
-        or ("random" if options.get("set_password", True) else "none")
+        options.get("password_mode") or ("random" if options.get("set_password", True) else "none")
     )
     fixed_password = str(options.get("fixed_password") or "")
     if password_mode == "fixed" and not fixed_password:
@@ -287,6 +287,12 @@ def _verify_mfa(payload: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            stream=sys.stdout,
+            force=True,
+        )
         _load_runtime()
         payload = json.loads(sys.stdin.read())
         action = payload.get("action", "register")
@@ -307,8 +313,9 @@ def main() -> None:
         else:
             raise RuntimeError(f"不支持的旧运行时操作: {action}")
     except Exception as error:
-        traceback.print_exc(file=sys.stderr)
-        result = {"ok": False, "error": str(error)}
+        trace = traceback.format_exc()
+        print(trace, file=sys.stderr, end="")
+        result = {"ok": False, "error": str(error), "traceback": trace}
     print(RESULT_PREFIX + json.dumps(result, ensure_ascii=False))
 
 

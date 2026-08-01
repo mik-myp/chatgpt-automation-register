@@ -53,8 +53,15 @@ def _classify_error(message: str) -> str:
         "invalid_grant",
         "imap xoauth2",
         "outlook otp timeout",
+        "outlook imap account unusable",
+        "user is authenticated but not connected",
+        "outlook refresh failed",
+        "authentication failed",
+        "authenticate failed",
         "registration_disallowed",
+        "邮件链接 otp timeout",
         "已有账号",
+        "账号被",
         "refresh_token 失效",
     )
     network_patterns = (
@@ -68,6 +75,21 @@ def _classify_error(message: str) -> str:
         "cloudflare",
         "403 forbidden",
         "connection reset",
+        "connection aborted",
+        "remote disconnected",
+        "max retries exceeded",
+        "csrf token 获取失败",
+        "csrf token 失败",
+        "/sentinel/req",
+        "sentinel /req",
+        "sentinel quickjs",
+        "check_proxy 失败",
+        "网络预检查",
+        "curl: (35)",
+        "curl: (28)",
+        "curl: (6)",
+        "curl: (7)",
+        "invalid_state",
     )
     if any(pattern in value for pattern in account_patterns):
         return "account"
@@ -397,6 +419,15 @@ class PipelineExecutor:
                 job_id=self.job_id,
             )
             if not result.get("ok"):
+                trace = str(result.get("traceback") or "").strip()
+                if trace:
+                    _emit(
+                        self.job_id,
+                        "runtime_traceback",
+                        trace[-12000:],
+                        level="error",
+                        data={"item_id": item_id, "email": account_data["email"]},
+                    )
                 raise RuntimeError(str(result.get("error") or "注册失败"))
             credential = dict(result.get("credential") or {})
             self._save_registration_success(item_id, registration_run.id, credential)
@@ -425,6 +456,9 @@ class PipelineExecutor:
             )
             if category == "network":
                 self._record_network_failure()
+            else:
+                with self._failure_lock:
+                    self._consecutive_network_failures = 0
             return False
 
         return self._complete_post_registration(
@@ -499,7 +533,11 @@ class PipelineExecutor:
         try:
             self._run_export(credential, export)
             if card_code:
-                self._run_kakao(item_id, credential, card_code)
+                try:
+                    self._run_kakao(item_id, credential, card_code)
+                except Exception:
+                    self._record_kakao_failure(card_code)
+                    raise
             else:
                 self._mark_item_completed(item_id)
         except Exception as error:
@@ -513,11 +551,21 @@ class PipelineExecutor:
             )
         return True
 
+    def _record_kakao_failure(self, card_code: str) -> None:
+        with SessionLocal() as session:
+            card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
+            if card is None:
+                return
+            allocation = session.get(PipelineCardAllocation, (self.run_id, card.id))
+            if allocation is not None:
+                allocation.failed_count = (allocation.failed_count or 0) + 1
+            session.commit()
+
     def _record_network_failure(self) -> None:
         with self._failure_lock:
             self._consecutive_network_failures += 1
             failures = self._consecutive_network_failures
-        if failures < 5:
+        if failures < 3:
             return
         with SessionLocal() as session:
             run = session.get(PipelineRun, self.run_id)
@@ -562,7 +610,7 @@ class PipelineExecutor:
             email = str(value.get("email") or item.account_email or "").lower()
             credential = session.get(Credential, email)
             if credential is None:
-                credential = Credential(email=email)
+                credential = Credential(email=email, metadata_json={})
                 session.add(credential)
             for field in (
                 "password",
@@ -578,7 +626,7 @@ class PipelineExecutor:
             security = value.get("security")
             if isinstance(security, dict):
                 credential.metadata_json = {
-                    **credential.metadata_json,
+                    **(credential.metadata_json or {}),
                     "account_security": security,
                 }
             registration_run.status = RunStatus.SUCCEEDED
@@ -667,13 +715,35 @@ class PipelineExecutor:
         eligible = next((item for item in eligibility if item.get("index") in (0, "0")), None)
         if eligible is None and eligibility:
             eligible = eligibility[0]
-        if not eligible or eligible.get("eligible") is not True:
+        eligible_payload = eligible or {}
+        eligibility_state = str(eligible_payload.get("state") or "unknown")
+        eligibility_error = str(eligible_payload.get("error") or "")
+        is_eligible = (
+            bool(eligible_payload)
+            and eligible_payload.get("eligible") is True
+            and eligibility_state == "eligible"
+            and not eligibility_error
+        )
+        if not is_eligible:
             with SessionLocal() as session:
                 item = session.get(PipelineItem, item_id)
                 if item is not None:
                     item.status = PipelineItemStatus.SKIPPED
-                    item.eligibility_state = str((eligible or {}).get("state") or "unknown")
-                    item.error = str((eligible or {}).get("error") or "") or None
+                    item.eligibility_state = eligibility_state
+                    item.error = eligibility_error or None
+                    saved = session.get(Credential, item.account_email)
+                    if saved is not None:
+                        saved.metadata_json = {
+                            **(saved.metadata_json or {}),
+                            "kakao_pipeline": {
+                                "status": "skipped",
+                                "eligible": False,
+                                "state": eligibility_state,
+                                "error": eligibility_error,
+                                "job_ids": [],
+                                "active_duplicate_job_ids": [],
+                            },
+                        }
                 session.commit()
             return
         payload = client.create_tasks(
@@ -682,15 +752,40 @@ class PipelineExecutor:
             plan_type=settings.plan_type,
             promo_code=settings.promo_code,
         )
-        tasks = payload_tasks(payload)
+        if isinstance(payload, dict):
+            raw_tasks: list[object] = (
+                [payload] if payload.get("job_id") or payload.get("id") else []
+            )
+            if not raw_tasks:
+                for key in ("tasks", "items", "results"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        raw_tasks = [*raw_tasks, *value]
+            raw_duplicates = payload.get("active_duplicates")
+            tasks = (
+                [item for item in raw_tasks if isinstance(item, dict)]
+                if isinstance(raw_tasks, list)
+                else []
+            )
+            duplicates = (
+                [item for item in raw_duplicates if isinstance(item, dict)]
+                if isinstance(raw_duplicates, list)
+                else []
+            )
+        else:
+            tasks = payload_tasks(payload)
+            duplicates = []
+        task_ids = [str(task.get("job_id") or task.get("id") or "") for task in tasks]
+        duplicate_ids = [str(task.get("job_id") or task.get("id") or "") for task in duplicates]
+        task_ids = [value for value in task_ids if value]
+        duplicate_ids = [value for value in duplicate_ids if value]
         with SessionLocal() as session:
             item = session.get(PipelineItem, item_id)
             run = session.get(PipelineRun, self.run_id)
             card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
             if item is None or run is None or card is None:
                 return
-            created = 0
-            for task in tasks:
+            for task in [*tasks, *duplicates]:
                 upstream_id = str(task.get("job_id") or task.get("id") or "")
                 if not upstream_id:
                     continue
@@ -718,21 +813,42 @@ class PipelineExecutor:
                             upstream_payload=task,
                         )
                     )
-                    created += 1
             allocation = session.get(
                 PipelineCardAllocation,
                 (self.run_id, card.id),
             )
             if allocation is not None:
-                allocation.created_count = (allocation.created_count or 0) + created
-            run.kakao_task_count = (run.kakao_task_count or 0) + created
+                allocation.created_count = (allocation.created_count or 0) + len(task_ids)
+                allocation.duplicate_count = (allocation.duplicate_count or 0) + len(duplicate_ids)
+            run.kakao_task_count = (run.kakao_task_count or 0) + len(task_ids)
             item.status = PipelineItemStatus.COMPLETED
+            item.eligibility_state = eligibility_state
+            saved = session.get(Credential, item.account_email)
+            if saved is not None:
+                saved.metadata_json = {
+                    **(saved.metadata_json or {}),
+                    "kakao_pipeline": {
+                        "status": (
+                            "created" if task_ids else "duplicate" if duplicate_ids else "submitted"
+                        ),
+                        "eligible": True,
+                        "state": eligibility_state,
+                        "error": "",
+                        "job_ids": task_ids,
+                        "active_duplicate_job_ids": duplicate_ids,
+                        "card_id": card.id,
+                    },
+                }
             session.commit()
         _emit(
             self.job_id,
             "kakao_submitted",
-            f"Kakao 任务已提交：{len(tasks)}",
-            data={"item_id": item_id},
+            f"Kakao 任务已提交：新建 {len(task_ids)}，执行中重复 {len(duplicate_ids)}",
+            data={
+                "item_id": item_id,
+                "created": len(task_ids),
+                "duplicates": len(duplicate_ids),
+            },
         )
 
 
@@ -843,9 +959,9 @@ class AccountSecurityExecutor:
             if value.get("totp_secret"):
                 credential.totp_secret = value["totp_secret"]
             credential.metadata_json = {
-                **credential.metadata_json,
+                **(credential.metadata_json or {}),
                 "account_security": {
-                    **dict(credential.metadata_json.get("account_security") or {}),
+                    **dict((credential.metadata_json or {}).get("account_security") or {}),
                     "mfa": mfa,
                 },
             }
@@ -862,14 +978,15 @@ class AccountSecurityExecutor:
             credential = session.get(Credential, email)
             if credential is None:
                 return
-            security = dict(credential.metadata_json.get("account_security") or {})
+            metadata = credential.metadata_json or {}
+            security = dict(metadata.get("account_security") or {})
             key = "password" if self.action == "set_password" else "mfa"
             security[key] = {
                 "requested": True,
                 "status": status_value,
                 "error": error,
             }
-            credential.metadata_json = {**credential.metadata_json, "account_security": security}
+            credential.metadata_json = {**metadata, "account_security": security}
             session.commit()
 
 

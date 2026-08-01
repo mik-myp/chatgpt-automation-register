@@ -50,7 +50,7 @@ def create_pipeline_run(
     request: PipelineRunCreateRequest,
     db: DatabaseSession,
 ) -> PipelineRunSummary:
-    email = ""
+    email = request.email.strip().lower()
 
     defaults = SettingsService(db).registration_internal()
     registration = defaults.model_dump()
@@ -161,6 +161,7 @@ def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
     ]
     return PipelineRunDetail(
         **PipelineRunSummary.model_validate(run).model_dump(),
+        config_snapshot=run.config_snapshot,
         items=[PipelineItemSummary.model_validate(item) for item in repository.items(run_id)],
         cards=cards,
     )
