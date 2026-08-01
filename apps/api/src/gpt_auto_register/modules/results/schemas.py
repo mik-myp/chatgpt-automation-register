@@ -10,6 +10,8 @@ class RegistrationResultSummary(BaseModel):
     has_access_token: bool
     has_session_token: bool
     has_refresh_token: bool
+    password_status: str | None = None
+    mfa_status: str | None = None
     plus_eligible: bool | None = None
     plus_state: str | None = None
     plus_error: str | None = None
@@ -29,6 +31,7 @@ class RegistrationResultDetail(BaseModel):
     id_token: str | None
     device_id: str | None
     cookie_header: str | None
+    totp_secret: str | None
     metadata_json: dict[str, object]
     created_at: datetime
     updated_at: datetime

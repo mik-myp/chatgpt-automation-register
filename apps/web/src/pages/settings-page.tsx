@@ -349,6 +349,38 @@ export function SettingsPage() {
                 }
               />
             </Section>
+
+            <Section
+              title="账号安全"
+              description="关闭密码设置后会尝试 passwordless OTP 注册；如果 OpenAI 当前注册状态要求密码，该账号可能注册失败。MFA 会在注册完成后通过新的邮箱验证码启用。"
+            >
+              <Toggle
+                label="注册时设置密码"
+                checked={form.registration.set_password ?? true}
+                onChange={(checked) =>
+                  setForm({
+                    ...form,
+                    registration: {
+                      ...form.registration,
+                      set_password: checked,
+                    },
+                  })
+                }
+              />
+              <Toggle
+                label="启用 Authenticator App MFA"
+                checked={form.registration.enable_authenticator_mfa ?? false}
+                onChange={(checked) =>
+                  setForm({
+                    ...form,
+                    registration: {
+                      ...form.registration,
+                      enable_authenticator_mfa: checked,
+                    },
+                  })
+                }
+              />
+            </Section>
           </div>
         </TabsContent>
 

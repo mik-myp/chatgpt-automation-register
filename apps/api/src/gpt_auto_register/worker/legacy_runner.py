@@ -47,6 +47,7 @@ def _sms_callback(config: dict[str, Any]) -> object | None:
 
 
 def _register(payload: dict[str, Any]) -> dict[str, Any]:
+    from account_security import security_outcome
     from auth_flow import AuthFlow
     from config import Config
 
@@ -86,12 +87,32 @@ def _register(payload: dict[str, Any]) -> dict[str, Any]:
     flow = AuthFlow(config, sms_callback=sms)
     partial = False
     try:
-        result = flow.run_register(mail).to_dict()
+        result = flow.run_register(
+            mail,
+            set_password=bool(options.get("set_password", True)),
+        ).to_dict()
+        security = security_outcome(flow, mail, options)
+        result["security"] = {
+            "password": security["password"],
+            "mfa": security["mfa"],
+        }
+        result["totp_secret"] = security["totp_secret"]
     except RuntimeError:
         result = flow.result.to_dict()
         if not any(result.get(key) for key in ("access_token", "session_token", "refresh_token")):
             raise
         partial = True
+        result["security"] = {
+            "password": security_outcome(
+                flow, mail, {**options, "enable_authenticator_mfa": False}
+            )["password"],
+            "mfa": {
+                "requested": bool(options.get("enable_authenticator_mfa", False)),
+                "status": "skipped_partial",
+                "error": "注册流程仅获得部分凭证，未执行 MFA",
+            },
+        }
+        result["totp_secret"] = ""
     finally:
         if sms is not None and hasattr(sms, "cleanup"):
             sms.cleanup()

@@ -86,4 +86,5 @@ class Credential(TimestampMixin, Base):
     id_token: Mapped[str | None] = mapped_column(Text)
     device_id: Mapped[str | None] = mapped_column(String(255))
     cookie_header: Mapped[str | None] = mapped_column(Text)
+    totp_secret: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[JsonObject] = json_object_column()

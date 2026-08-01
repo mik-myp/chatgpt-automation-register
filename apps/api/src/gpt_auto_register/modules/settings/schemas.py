@@ -7,6 +7,8 @@ class RegistrationSettings(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=50)
     otp_timeout: int = Field(default=10, ge=1, le=300)
     allow_existing_login: bool = True
+    set_password: bool = True
+    enable_authenticator_mfa: bool = False
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True
@@ -108,7 +110,7 @@ class ExportSettingsUpdate(BaseModel):
 
 class SystemSettingsUpdate(BaseModel):
     registration: RegistrationSettings
-    mail: MailSettingsUpdate = Field(default_factory=MailSettingsUpdate)
+    mail: MailSettingsUpdate
     kakao: KakaoSettings
     sms: SmsSettingsUpdate
     export: ExportSettingsUpdate

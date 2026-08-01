@@ -13,6 +13,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "curl-cffi>=0.7,<1",
   "pydantic-settings>=2.7,<3",
+  "pyotp>=2.9,<3",
   "requests>=2.31,<3",
   "sqlalchemy>=2.0.36,<3",
   "uvicorn[standard]>=0.34,<1",

@@ -6,6 +6,7 @@ import {
   CreditCard,
   Download,
   Eye,
+  EyeOff,
   Inbox,
   Search,
   Send,
@@ -81,6 +82,69 @@ function TokenState({ value }: { value: boolean }) {
   )
 }
 
+function SecurityState({
+  kind,
+  status,
+}: {
+  kind: "password" | "mfa"
+  status?: string | null
+}) {
+  const labels: Record<string, string> = {
+    set: "已设置",
+    available: "可用",
+    enabled: "已启用",
+    failed: "失败",
+    unsupported: "不支持",
+    not_requested: "未开启",
+    skipped_partial: "已跳过",
+  }
+  if (!status)
+    return <span className="text-xs text-muted-foreground">未记录</span>
+  const successful =
+    status === "set" || status === "available" || status === "enabled"
+  return (
+    <Badge variant={successful ? "default" : "outline"}>
+      {labels[status] ?? `${kind === "mfa" ? "MFA" : "密码"}: ${status}`}
+    </Badge>
+  )
+}
+
+function SecurityDetails({ metadata }: { metadata: Record<string, unknown> }) {
+  const security = metadata.account_security
+  if (!security || typeof security !== "object") return null
+  const outcomes = security as Record<string, unknown>
+  const rows = [
+    ["密码", outcomes.password],
+    ["Authenticator MFA", outcomes.mfa],
+  ] as const
+  return (
+    <div className="border-b py-3">
+      <div className="mb-2 text-xs font-medium">账号安全状态</div>
+      <div className="grid gap-2">
+        {rows.map(([label, raw]) => {
+          const outcome =
+            raw && typeof raw === "object"
+              ? (raw as Record<string, unknown>)
+              : {}
+          return (
+            <div className="grid gap-0.5 text-xs" key={label}>
+              <div className="flex items-center gap-2">
+                <span className="w-36 text-muted-foreground">{label}</span>
+                <span>{String(outcome.status ?? "未记录")}</span>
+              </div>
+              {outcome.error ? (
+                <p className="pl-4 leading-5 text-destructive">
+                  {String(outcome.error)}
+                </p>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function PlusState({
   eligible,
   state,
@@ -121,29 +185,46 @@ function PlusState({
 function CredentialField({
   label,
   value,
+  sensitive = false,
 }: {
   label: string
   value?: string | null
+  sensitive?: boolean
 }) {
+  const [revealed, setRevealed] = useState(false)
+  const displayValue =
+    sensitive && value && !revealed ? "••••••••••••••••" : value
   return (
     <div className="grid gap-1.5 border-b py-3 last:border-b-0">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium">{label}</span>
-        <Button
-          aria-label={`复制${label}`}
-          disabled={!value}
-          onClick={() => {
-            void navigator.clipboard.writeText(value ?? "")
-            toast.success(`已复制${label}`)
-          }}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <Clipboard />
-        </Button>
+        <div className="flex items-center gap-1">
+          {sensitive && value && (
+            <Button
+              aria-label={revealed ? `隐藏${label}` : `显示${label}`}
+              onClick={() => setRevealed((value) => !value)}
+              size="icon-sm"
+              variant="ghost"
+            >
+              {revealed ? <EyeOff /> : <Eye />}
+            </Button>
+          )}
+          <Button
+            aria-label={`复制${label}`}
+            disabled={!value}
+            onClick={() => {
+              void navigator.clipboard.writeText(value ?? "")
+              toast.success(`已复制${label}`)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Clipboard />
+          </Button>
+        </div>
       </div>
       <pre className="max-h-28 overflow-auto rounded-sm bg-muted/40 p-2 font-mono text-xs break-all whitespace-pre-wrap">
-        {value || "-"}
+        {displayValue || "-"}
       </pre>
     </div>
   )
@@ -487,6 +568,7 @@ export function ResultsPage() {
                 </TableHead>
                 <TableHead>邮箱</TableHead>
                 <TableHead>密码</TableHead>
+                <TableHead>MFA</TableHead>
                 <TableHead>Access</TableHead>
                 <TableHead>Session</TableHead>
                 <TableHead>Refresh</TableHead>
@@ -515,7 +597,16 @@ export function ResultsPage() {
                     {item.email}
                   </TableCell>
                   <TableCell>
-                    <TokenState value={item.has_password} />
+                    <SecurityState
+                      kind="password"
+                      status={
+                        item.password_status ??
+                        (item.has_password ? "available" : null)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <SecurityState kind="mfa" status={item.mfa_status} />
                   </TableCell>
                   <TableCell>
                     <TokenState value={item.has_access_token} />
@@ -551,7 +642,7 @@ export function ResultsPage() {
               ))}
               {!results.isLoading && !rows.length && (
                 <TableRow>
-                  <TableCell className="h-52 text-center" colSpan={9}>
+                  <TableCell className="h-52 text-center" colSpan={10}>
                     <Inbox className="mx-auto mb-3 size-7 text-muted-foreground" />
                     <Badge variant="outline">暂无注册结果</Badge>
                   </TableCell>
@@ -638,6 +729,15 @@ export function ResultsPage() {
               <CredentialField
                 label="密码"
                 value={detailMutation.data.password}
+                sensitive
+              />
+              <CredentialField
+                label="Authenticator TOTP Secret"
+                value={detailMutation.data.totp_secret}
+                sensitive
+              />
+              <SecurityDetails
+                metadata={detailMutation.data.metadata_json ?? {}}
               />
               <CredentialField
                 label="Access Token"

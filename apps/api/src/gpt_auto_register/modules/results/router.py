@@ -30,11 +30,19 @@ def _object_dict(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _security_status(item: object, name: str) -> str | None:
+    metadata = _object_dict(getattr(item, "metadata_json", {}))
+    security = _object_dict(metadata.get("account_security"))
+    outcome = _object_dict(security.get(name))
+    status_value = outcome.get("status")
+    return str(status_value) if status_value else None
+
+
 def _check_plus_token(email: str, access_token: str, proxy: str) -> PlusCheckItem:
     from curl_cffi import requests as cffi_requests
 
     try:
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies: Any = {"http": proxy, "https": proxy} if proxy else None
         response = cffi_requests.get(
             "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
             headers={
@@ -64,7 +72,7 @@ def _check_plus_token(email: str, access_token: str, proxy: str) -> PlusCheckIte
                 label="检查失败",
                 error=f"HTTP {response.status_code}",
             )
-        payload: dict[str, Any] = response.json()
+        payload: dict[str, Any] = response.json()  # type: ignore[no-untyped-call]
         accounts = payload.get("accounts")
         if not isinstance(accounts, dict) or not accounts:
             return PlusCheckItem(
@@ -138,6 +146,8 @@ def list_results(
             has_access_token=bool(item.access_token),
             has_session_token=bool(item.session_token),
             has_refresh_token=bool(item.refresh_token),
+            password_status=_security_status(item, "password"),
+            mfa_status=_security_status(item, "mfa"),
             plus_eligible=(
                 item.metadata_json.get("plus_eligible")
                 if isinstance(item.metadata_json.get("plus_eligible"), bool)
@@ -191,7 +201,7 @@ def publish_results(
             {
                 "action": "export",
                 "credential": RegistrationResultDetail.model_validate(value).model_dump(
-                    mode="json"
+                    mode="json", exclude={"totp_secret"}
                 ),
                 "export": export,
             },

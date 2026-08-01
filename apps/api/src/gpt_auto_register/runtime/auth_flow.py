@@ -87,6 +87,7 @@ class AuthFlow:
         self._is_existing_account = False
         self._existing_email_verification_mode = ""
         self._existing_page_type = ""
+        self.password_registration_status = "not_attempted"
         self._manual_login_verifier = (os.getenv("LOGIN_VERIFIER", "") or "").strip()
         self._captured_login_verifier = ""
         self._oauth_client_secret = (os.getenv("OAUTH_CLIENT_SECRET", "") or "").strip()
@@ -1824,6 +1825,7 @@ class AuthFlow:
                 if mode == "passwordless_signup":
                     logger.info("服务端选择 passwordless 注册流程（新账号，无密码），等待 OTP")
                     self._is_existing_account = False
+                    self.password_registration_status = "unsupported"
                 else:
                     logger.info("检测到已有账号，切换到 OTP 登录流程")
                     self._is_existing_account = True
@@ -2727,7 +2729,9 @@ class AuthFlow:
             return False
 
     # ── 完整注册流程 ──
-    def run_register(self, mail_provider: MailProvider) -> AuthResult:
+    def run_register(
+        self, mail_provider: MailProvider, *, set_password: bool = True
+    ) -> AuthResult:
         """执行完整注册流程"""
         # 检查网络
         if not self.check_proxy():
@@ -2777,11 +2781,20 @@ class AuthFlow:
         if is_new:
             # 新账号：注册密码 → 等服务端自动发码 → 验证 OTP → 创建账户
             # signin 时已带 login_hint，服务端会自动发码，无需主动 send_otp
-            password_registered = self.register_password(email)
+            if set_password:
+                password_registered = self.register_password(email)
+                self.password_registration_status = "set" if password_registered else "failed"
+            else:
+                password_registered = False
+                self.password_registration_status = "not_requested"
+                logger.info("已按 WebUI 配置跳过注册密码，尝试 passwordless OTP 注册")
             # 向前偏移 8 秒，覆盖 signin 阶段服务端自动发码的时间窗口
             otp_sent_at = time.time() - 8
             if not password_registered:
-                logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                if set_password:
+                    logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                else:
+                    logger.info("未设置注册密码，进入 passwordless OTP 路径")
                 self.fetch_client_auth_session_dump("post_register_password_failed_new")
                 # 密码注册失败时 fallback 主动发码
                 if not self.kickoff_otp_delivery("register_password_failed_fallback"):

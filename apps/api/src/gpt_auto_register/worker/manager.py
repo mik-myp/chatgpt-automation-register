@@ -464,6 +464,7 @@ class PipelineExecutor:
                     "id_token",
                     "device_id",
                     "cookie_header",
+                    "totp_secret",
                 )
             }
             item.status = PipelineItemStatus.REGISTERED
@@ -567,8 +568,15 @@ class PipelineExecutor:
                 "id_token",
                 "device_id",
                 "cookie_header",
+                "totp_secret",
             ):
                 setattr(credential, field, value.get(field) or None)
+            security = value.get("security")
+            if isinstance(security, dict):
+                credential.metadata_json = {
+                    **credential.metadata_json,
+                    "account_security": security,
+                }
             registration_run.status = RunStatus.SUCCEEDED
             registration_run.email = email
             registration_run.finished_at = utc_now()
