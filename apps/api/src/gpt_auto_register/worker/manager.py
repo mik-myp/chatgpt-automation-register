@@ -286,9 +286,13 @@ class PipelineExecutor:
                     allocation = PipelineCardAllocation(
                         pipeline_run_id=self.run_id,
                         card_id=card.id,
+                        allocated_count=0,
+                        created_count=0,
+                        duplicate_count=0,
+                        failed_count=0,
                     )
                     session.add(allocation)
-                allocation.allocated_count += count
+                allocation.allocated_count = (allocation.allocated_count or 0) + count
             session.commit()
         _emit(
             self.job_id,
@@ -720,8 +724,8 @@ class PipelineExecutor:
                 (self.run_id, card.id),
             )
             if allocation is not None:
-                allocation.created_count += created
-            run.kakao_task_count += created
+                allocation.created_count = (allocation.created_count or 0) + created
+            run.kakao_task_count = (run.kakao_task_count or 0) + created
             item.status = PipelineItemStatus.COMPLETED
             session.commit()
         _emit(
