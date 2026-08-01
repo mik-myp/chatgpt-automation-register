@@ -1,0 +1,16 @@
+{
+  "name": "api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && .venv/bin/python -m compileall -q src && touch dist/.build-stamp",
+    "dev": ".venv/bin/alembic upgrade head && .venv/bin/uvicorn gpt_auto_register.main:app --reload --host 127.0.0.1 --port 8000",
+    "format": ".venv/bin/ruff format src tests alembic",
+    "lint": ".venv/bin/ruff check src tests alembic",
+    "migrate:accounts": ".venv/bin/python -m gpt_auto_register.cli.migrate_accounts",
+    "migrate": ".venv/bin/alembic upgrade head",
+    "setup": "python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'",
+    "test": ".venv/bin/pytest",
+    "typecheck": ".venv/bin/mypy src"
+  }
+}

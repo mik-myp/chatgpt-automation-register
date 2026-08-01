@@ -1,19 +1,31 @@
-import { Button } from "@workspace/ui/components/button"
+import { Outlet } from "react-router"
+
+import { ApiStatus } from "@/components/api-status"
+import { AppSidebar } from "@/components/app-sidebar"
+
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@workspace/ui/components/sidebar"
 
 export function App() {
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="text-muted-foreground font-mono text-xs">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
-      </div>
-    </div>
+    <SidebarProvider className="h-svh min-h-0 overflow-hidden">
+      <AppSidebar />
+      <SidebarInset className="h-svh min-h-0 overflow-hidden">
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          <SidebarTrigger className="-ml-1" />
+          <ApiStatus />
+        </header>
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
+          <Outlet />
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
   )
+}
+
+export function WorkspacePage({ title }: { title: string }) {
+  return <h1 className="text-xl font-semibold">{title}</h1>
 }

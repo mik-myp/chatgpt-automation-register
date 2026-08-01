@@ -1,0 +1,1 @@
+"""Bundled registration protocol runtime."""

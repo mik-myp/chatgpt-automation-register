@@ -1,0 +1,1 @@
+"""Dashboard aggregation module."""
