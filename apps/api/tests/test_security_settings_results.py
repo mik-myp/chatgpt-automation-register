@@ -6,10 +6,11 @@ from gpt_auto_register.db.models.accounts import Credential
 
 def test_security_settings_defaults_and_update(client: TestClient) -> None:
     current = client.get("/api/settings").json()
-    assert current["registration"]["set_password"] is True
+    assert current["registration"]["password_mode"] == "random"
     assert current["registration"]["enable_authenticator_mfa"] is False
 
-    current["registration"]["set_password"] = False
+    current["registration"]["password_mode"] = "fixed"
+    current["registration"]["fixed_password"] = "known-password"
     current["registration"]["enable_authenticator_mfa"] = True
     current["mail"]["cf_admin_token"] = ""
     current["sms"]["api_key"] = ""
@@ -18,7 +19,8 @@ def test_security_settings_defaults_and_update(client: TestClient) -> None:
     response = client.put("/api/settings", json=current)
 
     assert response.status_code == 200
-    assert response.json()["registration"]["set_password"] is False
+    assert response.json()["registration"]["password_mode"] == "fixed"
+    assert response.json()["registration"]["fixed_password"] == "known-password"
     assert response.json()["registration"]["enable_authenticator_mfa"] is True
 
 

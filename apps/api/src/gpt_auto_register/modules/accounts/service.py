@@ -2,7 +2,8 @@ from typing import NoReturn
 
 from sqlalchemy.orm import Session
 
-from gpt_auto_register.db.models.accounts import AccountStatus, OutlookAccount
+from gpt_auto_register.db.models.accounts import AccountStatus, Credential, OutlookAccount
+from gpt_auto_register.db.models.jobs import Job
 from gpt_auto_register.modules.accounts.parser import parse_accounts
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.accounts.schemas import (
@@ -79,6 +80,25 @@ class AccountService:
         unique_emails = list(
             dict.fromkeys(email.strip().lower() for email in emails if email.strip())
         )
+        if action in {BulkAccountAction.SET_PASSWORD, BulkAccountAction.ENABLE_MFA}:
+            eligible = [
+                email
+                for email in unique_emails
+                if self.repository.get(email) is not None
+                and self.session.get(Credential, email) is not None
+            ]
+            if not eligible:
+                return BulkAccountResponse(processed=0, skipped=len(unique_emails))
+            job = Job(
+                kind="account.security",
+                payload={"action": action.value, "emails": eligible},
+                max_attempts=1,
+            )
+            self.session.add(job)
+            self.session.commit()
+            return BulkAccountResponse(
+                processed=len(eligible), skipped=len(unique_emails) - len(eligible), job_id=job.id
+            )
         for email in unique_emails:
             if action == BulkAccountAction.RELEASE:
                 changed = self.repository.release(email) is not None

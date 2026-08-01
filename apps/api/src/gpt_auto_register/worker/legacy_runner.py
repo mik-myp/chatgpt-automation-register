@@ -85,11 +85,19 @@ def _register(payload: dict[str, Any]) -> dict[str, Any]:
 
     sms = _sms_callback(payload.get("sms", {}))
     flow = AuthFlow(config, sms_callback=sms)
+    password_mode = str(
+        options.get("password_mode")
+        or ("random" if options.get("set_password", True) else "none")
+    )
+    fixed_password = str(options.get("fixed_password") or "")
+    if password_mode == "fixed" and not fixed_password:
+        raise RuntimeError("固定密码模式需要先在系统设置中填写密码")
     partial = False
     try:
         result = flow.run_register(
             mail,
-            set_password=bool(options.get("set_password", True)),
+            password_mode=password_mode,
+            password=fixed_password if password_mode == "fixed" else "",
         ).to_dict()
         security = security_outcome(flow, mail, options)
         result["security"] = {
@@ -252,6 +260,31 @@ def _export_test(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": bool(result.get("ok")), "result": result, "error": result.get("error")}
 
 
+def _verify_mfa(payload: dict[str, Any]) -> dict[str, Any]:
+    from auth_flow import AuthFlow
+    from config import Config
+
+    credential = payload["credential"]
+    flow = AuthFlow(Config(proxy=str(payload.get("proxy") or "").strip() or None))
+    flow.result.device_id = str(credential.get("device_id") or "")
+    for part in str(credential.get("cookie_header") or "").split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name and value:
+            flow.session.cookies.set(name, value, domain="chatgpt.com")
+    response = flow.session.get(
+        "https://chatgpt.com/api/auth/session",
+        headers=flow._common_headers("https://chatgpt.com/"),
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"验证 MFA 会话失败: HTTP {response.status_code}")
+    data = response.json()
+    user = data.get("user") if isinstance(data, dict) and isinstance(data.get("user"), dict) else {}
+    if user.get("mfa") is not True:
+        raise RuntimeError("服务端会话未确认 Authenticator App MFA 已启用")
+    return {"ok": True, "verified": True}
+
+
 def main() -> None:
     try:
         _load_runtime()
@@ -269,6 +302,8 @@ def main() -> None:
             result = _export(payload)
         elif action == "export_test":
             result = _export_test(payload)
+        elif action == "verify_mfa":
+            result = _verify_mfa(payload)
         else:
             raise RuntimeError(f"不支持的旧运行时操作: {action}")
     except Exception as error:

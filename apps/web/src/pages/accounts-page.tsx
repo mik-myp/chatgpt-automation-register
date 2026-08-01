@@ -4,10 +4,12 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query"
 import {
   Ellipsis,
   Inbox,
+  KeyRound,
   Play,
   RefreshCcw,
   RotateCcw,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
   X,
@@ -455,11 +457,23 @@ function BulkAccountActions() {
           [BulkAccountAction.release]: "释放",
           [BulkAccountAction.reset]: "重置",
           [BulkAccountAction.delete]: "删除",
+          [BulkAccountAction.set_password]: "修改密码",
+          [BulkAccountAction.enable_mfa]: "启用/验证 MFA",
         }
         const skipped = result.skipped ? `，跳过 ${result.skipped}` : ""
         toast.success(
-          `${labels[variables.data.action]}完成：处理 ${result.processed}${skipped}`
+          result.job_id
+            ? `${labels[variables.data.action]}已加入后台队列：${result.processed} 个${skipped}`
+            : `${labels[variables.data.action]}完成：处理 ${result.processed}${skipped}`
         )
+        if (result.job_id) {
+          for (const delay of [3000, 10000, 30000]) {
+            window.setTimeout(
+              () => void refreshAccountQueries(queryClient),
+              delay
+            )
+          }
+        }
       },
       onError: (error) => toast.error(errorMessage(error)),
     },
@@ -472,6 +486,25 @@ function BulkAccountActions() {
   return (
     <>
       <span className="text-xs font-medium">已选 {emails.length} 项</span>
+      <Button
+        disabled={mutation.isPending}
+        onClick={() => run(BulkAccountAction.set_password)}
+        size="sm"
+        title="对已选账号执行密码设置；协议不支持时会记录明确状态"
+        variant="outline"
+      >
+        <KeyRound />
+        修改密码
+      </Button>
+      <Button
+        disabled={mutation.isPending}
+        onClick={() => run(BulkAccountAction.enable_mfa)}
+        size="sm"
+        variant="outline"
+      >
+        <ShieldCheck />
+        启用/验证 MFA
+      </Button>
       <Button
         disabled={mutation.isPending}
         onClick={() => run(BulkAccountAction.release)}
@@ -623,7 +656,7 @@ export function AccountsPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="min-w-190">
+          <Table className="min-w-230">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
@@ -641,6 +674,8 @@ export function AccountsPage() {
                 <TableHead className="w-[42%]">邮箱</TableHead>
                 <TableHead>接收方式</TableHead>
                 <TableHead>状态</TableHead>
+                <TableHead>密码</TableHead>
+                <TableHead>MFA</TableHead>
                 <TableHead>领取时间</TableHead>
                 <TableHead>完成时间</TableHead>
                 <TableHead className="w-10">
@@ -652,14 +687,14 @@ export function AccountsPage() {
               {accounts.isLoading &&
                 Array.from({ length: 6 }, (_, index) => (
                   <TableRow key={index}>
-                    <TableCell colSpan={7}>
+                    <TableCell colSpan={9}>
                       <div className="h-5 animate-pulse rounded bg-muted" />
                     </TableCell>
                   </TableRow>
                 ))}
               {accounts.isError && (
                 <TableRow>
-                  <TableCell className="h-52 text-center" colSpan={7}>
+                  <TableCell className="h-52 text-center" colSpan={9}>
                     <p className="text-sm font-medium">无法读取账号池</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {errorMessage(accounts.error)}
@@ -711,6 +746,48 @@ export function AccountsPage() {
                         {STATUS_LABELS[account.status]}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      <Badge
+                        title={account.security_error ?? undefined}
+                        variant={
+                          account.password_status === "set" ||
+                          account.password_status === "available"
+                            ? "default"
+                            : "outline"
+                        }
+                      >
+                        {{
+                          set: "已设置",
+                          available: "可用",
+                          failed: "失败",
+                          unsupported: "不支持",
+                          not_requested: "未设置",
+                          not_set: "未设置",
+                        }[account.password_status ?? ""] ??
+                          account.password_status ??
+                          "未记录"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        title={account.security_error ?? undefined}
+                        variant={
+                          account.mfa_status === "enabled"
+                            ? "default"
+                            : "outline"
+                        }
+                      >
+                        {{
+                          enabled: "已验证",
+                          failed: "失败",
+                          not_requested: "未启用",
+                          not_enabled: "未启用",
+                          skipped_partial: "已跳过",
+                        }[account.mfa_status ?? ""] ??
+                          account.mfa_status ??
+                          "未记录"}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {formatDate(account.claimed_at)}
                     </TableCell>
@@ -726,7 +803,7 @@ export function AccountsPage() {
                 !accounts.isError &&
                 !accounts.data?.items.length && (
                   <TableRow>
-                    <TableCell className="h-52 text-center" colSpan={7}>
+                    <TableCell className="h-52 text-center" colSpan={9}>
                       <Inbox className="mx-auto mb-3 size-7 text-muted-foreground" />
                       <p className="text-sm font-medium">没有匹配的账号</p>
                       <p className="mt-1 text-xs text-muted-foreground">

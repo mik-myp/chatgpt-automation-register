@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.db.models.accounts import AccountStatus, OutlookAccount
+from gpt_auto_register.db.models.accounts import AccountStatus, Credential, OutlookAccount
 from gpt_auto_register.db.result import affected_rows
 from gpt_auto_register.modules.accounts.parser import ParsedAccount
 
@@ -62,6 +62,14 @@ class AccountRepository:
             select(OutlookAccount.status, func.count()).group_by(OutlookAccount.status)
         )
         return {status: count for status, count in rows}
+
+    def credentials(self, emails: list[str]) -> dict[str, Credential]:
+        if not emails:
+            return {}
+        return {
+            row.email: row
+            for row in self.session.scalars(select(Credential).where(Credential.email.in_(emails)))
+        }
 
     def import_accounts(self, accounts: list[ParsedAccount]) -> ImportCounts:
         inserted = updated = unchanged = 0

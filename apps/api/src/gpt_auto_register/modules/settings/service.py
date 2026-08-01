@@ -23,9 +23,12 @@ class SettingsService:
         self.session = session
 
     def get(self) -> SystemSettingsResponse:
-        registration = RegistrationSettings.model_validate(
-            self._value("registration", RegistrationSettings().model_dump())
-        )
+        registration_value = self._value("registration", RegistrationSettings().model_dump())
+        if "password_mode" not in registration_value and "set_password" in registration_value:
+            registration_value["password_mode"] = (
+                "random" if registration_value.get("set_password") else "none"
+            )
+        registration = RegistrationSettings.model_validate(registration_value)
         registration = registration.model_copy(
             update={
                 "want_access_token": True,

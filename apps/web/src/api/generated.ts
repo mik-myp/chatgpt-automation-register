@@ -41,6 +41,9 @@ export interface AccountDetail {
   failure_reason: string | null
   created_at: string
   updated_at: string
+  password_status?: string
+  mfa_status?: string
+  security_error?: string | null
   password: string | null
   client_id: string | null
   refresh_token: string | null
@@ -56,6 +59,9 @@ export interface AccountSummary {
   failure_reason: string | null
   created_at: string
   updated_at: string
+  password_status?: string
+  mfa_status?: string
+  security_error?: string | null
 }
 
 export interface AccountListResponse {
@@ -97,6 +103,101 @@ export interface AccountStats {
   failed: number
 }
 
+export type BackupBundleSectionsItem = { [key: string]: unknown }
+
+export type BackupBundleSections = { [key: string]: BackupBundleSectionsItem[] }
+
+export interface BackupBundle {
+  format: "gpt-auto-register-backup"
+  version: 1
+  exported_at: string
+  sections: BackupBundleSections
+}
+
+export type BackupImportRequestSectionsItem =
+  (typeof BackupImportRequestSectionsItem)[keyof typeof BackupImportRequestSectionsItem]
+
+export const BackupImportRequestSectionsItem = {
+  settings: "settings",
+  accounts: "accounts",
+  credentials: "credentials",
+  card_batches: "card_batches",
+  cards: "cards",
+} as const
+
+export type BackupImportRequestMode =
+  (typeof BackupImportRequestMode)[keyof typeof BackupImportRequestMode]
+
+export const BackupImportRequestMode = {
+  merge: "merge",
+  overwrite: "overwrite",
+} as const
+
+export type BackupImportRequestConflictPolicy =
+  (typeof BackupImportRequestConflictPolicy)[keyof typeof BackupImportRequestConflictPolicy]
+
+export const BackupImportRequestConflictPolicy = {
+  incoming: "incoming",
+  local: "local",
+} as const
+
+export interface BackupImportRequest {
+  bundle: BackupBundle
+  sections: BackupImportRequestSectionsItem[]
+  mode?: BackupImportRequestMode
+  conflict_policy?: BackupImportRequestConflictPolicy
+}
+
+export interface BackupImportResponse {
+  added: number
+  updated: number
+  unchanged: number
+  removed: number
+  protected: number
+}
+
+export type BackupPreviewRequestSectionsItem =
+  (typeof BackupPreviewRequestSectionsItem)[keyof typeof BackupPreviewRequestSectionsItem]
+
+export const BackupPreviewRequestSectionsItem = {
+  settings: "settings",
+  accounts: "accounts",
+  credentials: "credentials",
+  card_batches: "card_batches",
+  cards: "cards",
+} as const
+
+export type BackupPreviewRequestMode =
+  (typeof BackupPreviewRequestMode)[keyof typeof BackupPreviewRequestMode]
+
+export const BackupPreviewRequestMode = {
+  merge: "merge",
+  overwrite: "overwrite",
+} as const
+
+export interface BackupPreviewRequest {
+  bundle: BackupBundle
+  sections: BackupPreviewRequestSectionsItem[]
+  mode?: BackupPreviewRequestMode
+}
+
+export interface BackupSectionPreview {
+  incoming: number
+  added: number
+  updated: number
+  unchanged: number
+  removable?: number
+  protected?: number
+}
+
+export type BackupPreviewResponseSections = {
+  [key: string]: BackupSectionPreview
+}
+
+export interface BackupPreviewResponse {
+  sections: BackupPreviewResponseSections
+}
+
 export type BulkAccountAction =
   (typeof BulkAccountAction)[keyof typeof BulkAccountAction]
 
@@ -104,6 +205,8 @@ export const BulkAccountAction = {
   release: "release",
   reset: "reset",
   delete: "delete",
+  set_password: "set_password",
+  enable_mfa: "enable_mfa",
 } as const
 
 export interface BulkAccountRequest {
@@ -115,6 +218,7 @@ export interface BulkAccountRequest {
 export interface BulkAccountResponse {
   processed: number
   skipped: number
+  job_id?: string | null
 }
 
 export type BulkCardAction =
@@ -675,6 +779,15 @@ export interface RegistrationResultListResponse {
   offset: number
 }
 
+export type RegistrationSettingsPasswordMode =
+  (typeof RegistrationSettingsPasswordMode)[keyof typeof RegistrationSettingsPasswordMode]
+
+export const RegistrationSettingsPasswordMode = {
+  none: "none",
+  random: "random",
+  fixed: "fixed",
+} as const
+
 export interface RegistrationSettings {
   /**
    * @minimum 1
@@ -687,7 +800,9 @@ export interface RegistrationSettings {
    */
   otp_timeout?: number
   allow_existing_login?: boolean
-  set_password?: boolean
+  password_mode?: RegistrationSettingsPasswordMode
+  /** @maxLength 256 */
+  fixed_password?: string
   enable_authenticator_mfa?: boolean
   want_access_token?: boolean
   want_session_token?: boolean
@@ -4476,6 +4591,262 @@ export const useUpdateSettingsApiSettingsPut = <
   TContext
 > => {
   return useMutation(getUpdateSettingsApiSettingsPutMutationOptions(options))
+}
+
+/**
+ * @summary Export Data
+ */
+export const exportDataApiSettingsDataExportGet = (
+  options?: SecondParameter<typeof orvalRequest>,
+  signal?: AbortSignal
+) => {
+  return orvalRequest<BackupBundle>(
+    { url: `/api/settings/data/export`, method: "GET", signal },
+    options
+  )
+}
+
+export const getExportDataApiSettingsDataExportGetQueryKey = () => {
+  return [`/api/settings/data/export`] as const
+}
+
+export const getExportDataApiSettingsDataExportGetQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>,
+    TError,
+    TData
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {}
+
+  const queryKey =
+    queryOptions?.queryKey ?? getExportDataApiSettingsDataExportGetQueryKey()
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>
+  > = ({ signal }) => exportDataApiSettingsDataExportGet(requestOptions, signal)
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey }
+}
+
+export type ExportDataApiSettingsDataExportGetQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>
+>
+export type ExportDataApiSettingsDataExportGetQueryError = unknown
+
+/**
+ * @summary Export Data
+ */
+
+export function useExportDataApiSettingsDataExportGet<
+  TData = Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof exportDataApiSettingsDataExportGet>>,
+    TError,
+    TData
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions =
+    getExportDataApiSettingsDataExportGetQueryOptions(options)
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey
+  }
+
+  return withQueryKey(query, queryOptions.queryKey)
+}
+
+/**
+ * @summary Preview Data
+ */
+export const previewDataApiSettingsDataPreviewPost = (
+  backupPreviewRequest: BackupPreviewRequest,
+  options?: SecondParameter<typeof orvalRequest>,
+  signal?: AbortSignal
+) => {
+  return orvalRequest<BackupPreviewResponse>(
+    {
+      url: `/api/settings/data/preview`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      data: backupPreviewRequest,
+      signal,
+    },
+    options
+  )
+}
+
+export const getPreviewDataApiSettingsDataPreviewPostMutationOptions = <
+  TError = HTTPValidationError,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>,
+    TError,
+    { data: BackupPreviewRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>,
+  TError,
+  { data: BackupPreviewRequest },
+  TContext
+> => {
+  const mutationKey = ["previewDataApiSettingsDataPreviewPost"]
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>,
+    { data: BackupPreviewRequest }
+  > = (props) => {
+    const { data } = props ?? {}
+
+    return previewDataApiSettingsDataPreviewPost(data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type PreviewDataApiSettingsDataPreviewPostMutationResult = NonNullable<
+  Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>
+>
+export type PreviewDataApiSettingsDataPreviewPostMutationBody =
+  BackupPreviewRequest
+export type PreviewDataApiSettingsDataPreviewPostMutationError =
+  HTTPValidationError
+
+/**
+ * @summary Preview Data
+ */
+export const usePreviewDataApiSettingsDataPreviewPost = <
+  TError = HTTPValidationError,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>,
+    TError,
+    { data: BackupPreviewRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}): UseMutationResult<
+  Awaited<ReturnType<typeof previewDataApiSettingsDataPreviewPost>>,
+  TError,
+  { data: BackupPreviewRequest },
+  TContext
+> => {
+  return useMutation(
+    getPreviewDataApiSettingsDataPreviewPostMutationOptions(options)
+  )
+}
+
+/**
+ * @summary Import Data
+ */
+export const importDataApiSettingsDataImportPost = (
+  backupImportRequest: BackupImportRequest,
+  options?: SecondParameter<typeof orvalRequest>,
+  signal?: AbortSignal
+) => {
+  return orvalRequest<BackupImportResponse>(
+    {
+      url: `/api/settings/data/import`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      data: backupImportRequest,
+      signal,
+    },
+    options
+  )
+}
+
+export const getImportDataApiSettingsDataImportPostMutationOptions = <
+  TError = HTTPValidationError,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>,
+    TError,
+    { data: BackupImportRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>,
+  TError,
+  { data: BackupImportRequest },
+  TContext
+> => {
+  const mutationKey = ["importDataApiSettingsDataImportPost"]
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined }
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>,
+    { data: BackupImportRequest }
+  > = (props) => {
+    const { data } = props ?? {}
+
+    return importDataApiSettingsDataImportPost(data, requestOptions)
+  }
+
+  return { mutationFn, ...mutationOptions }
+}
+
+export type ImportDataApiSettingsDataImportPostMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>
+>
+export type ImportDataApiSettingsDataImportPostMutationBody =
+  BackupImportRequest
+export type ImportDataApiSettingsDataImportPostMutationError =
+  HTTPValidationError
+
+/**
+ * @summary Import Data
+ */
+export const useImportDataApiSettingsDataImportPost = <
+  TError = HTTPValidationError,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>,
+    TError,
+    { data: BackupImportRequest },
+    TContext
+  >
+  request?: SecondParameter<typeof orvalRequest>
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importDataApiSettingsDataImportPost>>,
+  TError,
+  { data: BackupImportRequest },
+  TContext
+> => {
+  return useMutation(
+    getImportDataApiSettingsDataImportPostMutationOptions(options)
+  )
 }
 
 /**

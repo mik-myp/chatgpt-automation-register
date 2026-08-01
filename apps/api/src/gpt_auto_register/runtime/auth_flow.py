@@ -1850,9 +1850,9 @@ class AuthFlow:
             return True
 
     # ── Step 6.5: 注册密码 ──
-    def register_password(self, email: str) -> bool:
+    def register_password(self, email: str, password: str = "") -> bool:
         logger.info("[5.5/10] 注册密码...")
-        password = self._random_password()
+        password = password or self._random_password()
         self.result.password = password
 
         # 先访问 create-account/password 页面（HAR 确认需要此步建立服务端状态）
@@ -2730,7 +2730,7 @@ class AuthFlow:
 
     # ── 完整注册流程 ──
     def run_register(
-        self, mail_provider: MailProvider, *, set_password: bool = True
+        self, mail_provider: MailProvider, *, password_mode: str = "random", password: str = ""
     ) -> AuthResult:
         """执行完整注册流程"""
         # 检查网络
@@ -2781,8 +2781,9 @@ class AuthFlow:
         if is_new:
             # 新账号：注册密码 → 等服务端自动发码 → 验证 OTP → 创建账户
             # signin 时已带 login_hint，服务端会自动发码，无需主动 send_otp
+            set_password = password_mode != "none"
             if set_password:
-                password_registered = self.register_password(email)
+                password_registered = self.register_password(email, password)
                 self.password_registration_status = "set" if password_registered else "failed"
             else:
                 password_registered = False

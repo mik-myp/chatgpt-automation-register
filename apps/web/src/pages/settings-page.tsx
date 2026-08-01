@@ -1,9 +1,21 @@
 import { type ReactNode, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import { PlugZap, RefreshCw, Save } from "lucide-react"
+import {
+  Database,
+  Dices,
+  Download,
+  Eye,
+  EyeOff,
+  PlugZap,
+  RefreshCw,
+  Save,
+  Upload,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import {
+  type BackupBundle,
+  type BackupPreviewResponse,
   type SystemSettingsResponse,
   type SystemSettingsUpdate,
   useGetSettingsApiSettingsGet,
@@ -147,9 +159,230 @@ function Toggle({
   )
 }
 
+const BACKUP_SECTIONS = [
+  ["settings", "系统配置"],
+  ["accounts", "邮箱号池"],
+  ["credentials", "注册凭据"],
+  ["card_batches", "卡密批次"],
+  ["cards", "卡密"],
+] as const
+
+function DataTransferPanel() {
+  const [bundle, setBundle] = useState<BackupBundle | null>(null)
+  const [sections, setSections] = useState<string[]>(
+    BACKUP_SECTIONS.map(([value]) => value)
+  )
+  const [mode, setMode] = useState<"merge" | "overwrite">("merge")
+  const [preview, setPreview] = useState<BackupPreviewResponse | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const exporting = useMutation<BackupBundle, ApiError>({
+    mutationFn: () => apiRequest<BackupBundle>("/api/settings/data/export"),
+    onSuccess: (value) => {
+      const blob = new Blob([JSON.stringify(value, null, 2)], {
+        type: "application/json",
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = `gpt-auto-register-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      toast.success("数据备份已导出")
+    },
+    onError: (error) => toast.error(error.message),
+  })
+  const previewing = useMutation<BackupPreviewResponse, ApiError>({
+    mutationFn: () =>
+      apiRequest<BackupPreviewResponse>("/api/settings/data/preview", {
+        method: "POST",
+        data: { bundle, sections, mode },
+      }),
+    onSuccess: (value) => {
+      setPreview(value)
+      setConfirmed(false)
+    },
+    onError: (error) => toast.error(error.message),
+  })
+  const importing = useMutation<
+    { added: number; updated: number; unchanged: number; removed: number },
+    ApiError
+  >({
+    mutationFn: () =>
+      apiRequest("/api/settings/data/import", {
+        method: "POST",
+        data: {
+          bundle,
+          sections,
+          mode,
+          conflict_policy: "incoming",
+        },
+      }),
+    onSuccess: (value) => {
+      toast.success(
+        `导入完成：新增 ${value.added}，更新 ${value.updated}，移除 ${value.removed}`
+      )
+      setBundle(null)
+      setPreview(null)
+      setConfirmed(false)
+    },
+    onError: (error) => toast.error(error.message),
+  })
+
+  return (
+    <div className="mx-auto w-full max-w-5xl">
+      <Section
+        title="导出备份"
+        description="导出系统配置、邮箱凭据、注册令牌和 Authenticator 密钥。备份文件包含敏感数据，请只保存在可信设备。"
+      >
+        <div className="flex justify-end">
+          <Button
+            disabled={exporting.isPending}
+            onClick={() => exporting.mutate()}
+            variant="outline"
+          >
+            <Download />
+            {exporting.isPending ? "正在导出" : "下载完整备份"}
+          </Button>
+        </div>
+      </Section>
+      <Section
+        title="导入与同步"
+        description="合并会保留本机额外数据；覆盖会移除所选分区中备份不存在的数据，但使用中的账号和被历史任务引用的卡密会受到保护。"
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="备份文件">
+            <Input
+              accept="application/json,.json"
+              type="file"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (!file) return
+                void file
+                  .text()
+                  .then((text) => {
+                    const value = JSON.parse(text) as BackupBundle
+                    if (
+                      value.format !== "gpt-auto-register-backup" ||
+                      value.version !== 1
+                    )
+                      throw new Error("不是受支持的数据备份")
+                    setBundle(value)
+                    setPreview(null)
+                  })
+                  .catch((error: unknown) =>
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "无法读取备份文件"
+                    )
+                  )
+              }}
+            />
+          </Field>
+          <Field label="导入模式">
+            <Select
+              value={mode}
+              onValueChange={(value) => {
+                setMode(value as "merge" | "overwrite")
+                setPreview(null)
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="merge">合并</SelectItem>
+                <SelectItem value="overwrite">覆盖所选分区</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          {BACKUP_SECTIONS.map(([value, label]) => (
+            <label className="flex items-center gap-2 text-sm" key={value}>
+              <Checkbox
+                checked={sections.includes(value)}
+                onCheckedChange={(checked) => {
+                  setSections((current) =>
+                    checked
+                      ? [...current, value]
+                      : current.filter((item) => item !== value)
+                  )
+                  setPreview(null)
+                }}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <Button
+            disabled={!bundle || !sections.length || previewing.isPending}
+            onClick={() => previewing.mutate()}
+            variant="outline"
+          >
+            <Database />
+            {previewing.isPending ? "正在分析" : "预览导入"}
+          </Button>
+        </div>
+        {preview && (
+          <div className="mt-5 border-t pt-4">
+            <div className="overflow-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-muted-foreground">
+                  <tr>
+                    <th className="py-2">分区</th>
+                    <th>新增</th>
+                    <th>更新</th>
+                    <th>不变</th>
+                    <th>移除</th>
+                    <th>保护</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(preview.sections).map(([name, value]) => (
+                    <tr className="border-t" key={name}>
+                      <td className="py-2">
+                        {BACKUP_SECTIONS.find(([key]) => key === name)?.[1] ??
+                          name}
+                      </td>
+                      <td>{value.added}</td>
+                      <td>{value.updated}</td>
+                      <td>{value.unchanged}</td>
+                      <td>{value.removable}</td>
+                      <td>{value.protected}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <label className="mt-4 flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={confirmed}
+                onCheckedChange={(value) => setConfirmed(value === true)}
+              />
+              我已确认以上变更并了解备份包含敏感凭据
+            </label>
+            <div className="mt-4 flex justify-end">
+              <Button
+                disabled={!confirmed || importing.isPending}
+                onClick={() => importing.mutate()}
+              >
+                <Upload />
+                {importing.isPending ? "正在导入" : "确认导入"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Section>
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const settings = useGetSettingsApiSettingsGet()
   const [draft, setForm] = useState<SystemSettingsUpdate | null>(null)
+  const [showFixedPassword, setShowFixedPassword] = useState(false)
   const form = draft ?? editableSettings(settings.data)
 
   const mutation = useUpdateSettingsApiSettingsPut<ApiError>({
@@ -238,12 +471,13 @@ export function SettingsPage() {
         className="flex min-h-0 flex-1 flex-col"
         defaultValue="registration"
       >
-        <TabsList className="grid w-full shrink-0 grid-cols-5">
+        <TabsList className="grid w-full shrink-0 grid-cols-6">
           <TabsTrigger value="registration">注册</TabsTrigger>
           <TabsTrigger value="mail">邮箱</TabsTrigger>
           <TabsTrigger value="kakao">Kakao</TabsTrigger>
           <TabsTrigger value="sms">接码</TabsTrigger>
           <TabsTrigger value="export">自动导出</TabsTrigger>
+          <TabsTrigger value="data">数据同步</TabsTrigger>
         </TabsList>
 
         <TabsContent
@@ -352,21 +586,87 @@ export function SettingsPage() {
 
             <Section
               title="账号安全"
-              description="关闭密码设置后会尝试 passwordless OTP 注册；如果 OpenAI 当前注册状态要求密码，该账号可能注册失败。MFA 会在注册完成后通过新的邮箱验证码启用。"
+              description="可选择不设置密码、为每个账号生成独立密码，或让所有新账号使用同一个固定密码。MFA 会在注册完成后通过新的邮箱验证码启用。"
             >
-              <Toggle
-                label="注册时设置密码"
-                checked={form.registration.set_password ?? true}
-                onChange={(checked) =>
-                  setForm({
-                    ...form,
-                    registration: {
-                      ...form.registration,
-                      set_password: checked,
-                    },
-                  })
-                }
-              />
+              <Field label="注册密码策略">
+                <Select
+                  value={form.registration.password_mode ?? "random"}
+                  onValueChange={(value) =>
+                    setForm({
+                      ...form,
+                      registration: {
+                        ...form.registration,
+                        password_mode: value as "none" | "random" | "fixed",
+                      },
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">不设置密码</SelectItem>
+                    <SelectItem value="random">每个账号随机生成</SelectItem>
+                    <SelectItem value="fixed">统一固定密码</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              {form.registration.password_mode === "fixed" && (
+                <Field className="mt-4" label="固定密码">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      autoComplete="new-password"
+                      type={showFixedPassword ? "text" : "password"}
+                      value={form.registration.fixed_password ?? ""}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          registration: {
+                            ...form.registration,
+                            fixed_password: event.target.value,
+                          },
+                        })
+                      }
+                    />
+                    <Button
+                      aria-label={showFixedPassword ? "隐藏密码" : "显示密码"}
+                      onClick={() => setShowFixedPassword((value) => !value)}
+                      size="icon"
+                      title={showFixedPassword ? "隐藏密码" : "显示密码"}
+                      type="button"
+                      variant="outline"
+                    >
+                      {showFixedPassword ? <EyeOff /> : <Eye />}
+                    </Button>
+                    <Button
+                      aria-label="随机生成固定密码"
+                      onClick={() => {
+                        const alphabet =
+                          "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+                        const bytes = crypto.getRandomValues(new Uint8Array(20))
+                        const password = Array.from(
+                          bytes,
+                          (value) => alphabet[value % alphabet.length]
+                        ).join("")
+                        setForm({
+                          ...form,
+                          registration: {
+                            ...form.registration,
+                            fixed_password: password,
+                          },
+                        })
+                        setShowFixedPassword(true)
+                      }}
+                      size="icon"
+                      title="随机生成固定密码"
+                      type="button"
+                      variant="outline"
+                    >
+                      <Dices />
+                    </Button>
+                  </div>
+                </Field>
+              )}
               <Toggle
                 label="启用 Authenticator App MFA"
                 checked={form.registration.enable_authenticator_mfa ?? false}
@@ -382,6 +682,10 @@ export function SettingsPage() {
               />
             </Section>
           </div>
+        </TabsContent>
+
+        <TabsContent className="mt-5 min-h-0 flex-1 overflow-auto" value="data">
+          <DataTransferPanel />
         </TabsContent>
 
         <TabsContent className="mt-5 min-h-0 flex-1 overflow-auto" value="mail">

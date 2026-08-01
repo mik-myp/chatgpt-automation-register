@@ -36,6 +36,8 @@ class FakeSession:
 
     def get(self, url: str, **kwargs: Any) -> FakeResponse:
         self.gets.append(url)
+        if url.endswith("/api/auth/session"):
+            return FakeResponse({"user": {"mfa": True}})
         return FakeResponse({})
 
 

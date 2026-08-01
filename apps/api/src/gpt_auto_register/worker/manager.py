@@ -732,6 +732,143 @@ class PipelineExecutor:
         )
 
 
+class AccountSecurityExecutor:
+    def __init__(self, job_id: str, payload: dict[str, Any]) -> None:
+        self.job_id = job_id
+        self.action = str(payload.get("action") or "")
+        self.emails = [str(value).strip().lower() for value in payload.get("emails", [])]
+
+    def execute(self) -> dict[str, Any]:
+        succeeded = failed = 0
+        for email in self.emails:
+            try:
+                self._execute_one(email)
+                succeeded += 1
+            except Exception as error:
+                failed += 1
+                self._record(email, "failed", str(error))
+                _emit(
+                    self.job_id,
+                    "account_security_failed",
+                    f"账号安全操作失败 {email}: {error}",
+                    level="error",
+                    data={"email": email, "action": self.action},
+                )
+        return {"succeeded": succeeded, "failed": failed, "total": len(self.emails)}
+
+    def _execute_one(self, email: str) -> None:
+        with SessionLocal() as session:
+            account = session.get(OutlookAccount, email)
+            credential = session.get(Credential, email)
+            if account is None or credential is None:
+                raise RuntimeError("账号缺少邮箱或 ChatGPT 凭据")
+            if self.action == "set_password":
+                self._record(
+                    email,
+                    "unsupported",
+                    "尚未确认 OpenAI 已注册账号的改密协议，请使用官方密码重置流程",
+                )
+                return
+            registration = SettingsService(session).registration_internal().model_dump()
+            registration.update(password_mode="none", enable_authenticator_mfa=True)
+            sms = SettingsService(session).sms_internal()
+            mail = SettingsService(session).mail_internal()
+            account_data = _account_payload(account)
+            credential_data = {
+                "device_id": credential.device_id or "",
+                "cookie_header": credential.cookie_header or "",
+            }
+            has_totp_secret = bool(credential.totp_secret)
+        _emit(
+            self.job_id,
+            "account_security_started",
+            f"开始启用或验证 MFA {email}",
+            data={"email": email, "action": self.action},
+        )
+        if has_totp_secret:
+            result = _legacy_call(
+                {
+                    "action": "verify_mfa",
+                    "credential": credential_data,
+                    "proxy": registration.get("proxy", ""),
+                },
+                timeout=120,
+                job_id=self.job_id,
+            )
+            if not result.get("verified"):
+                raise RuntimeError(str(result.get("error") or "MFA 状态验证失败"))
+            self._record(email, "enabled", "")
+            _emit(
+                self.job_id,
+                "account_security_succeeded",
+                f"MFA 服务端状态已验证 {email}",
+                data={"email": email, "action": self.action},
+            )
+            return
+        result = _legacy_call(
+            {
+                "action": "register",
+                "account": account_data,
+                "registration": registration,
+                "sms": sms,
+                "mail": mail,
+            },
+            job_id=self.job_id,
+        )
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "MFA 操作失败"))
+        value = dict(result.get("credential") or {})
+        security = value.get("security") if isinstance(value.get("security"), dict) else {}
+        mfa = security.get("mfa") if isinstance(security, dict) else {}
+        if not isinstance(mfa, dict) or mfa.get("status") != "enabled":
+            raise RuntimeError(str((mfa or {}).get("error") or "MFA 未由服务端确认启用"))
+        with SessionLocal() as session:
+            credential = session.get(Credential, email)
+            if credential is None:
+                raise RuntimeError("ChatGPT 凭据不存在")
+            for field in (
+                "access_token",
+                "session_token",
+                "refresh_token",
+                "id_token",
+                "device_id",
+                "cookie_header",
+            ):
+                if value.get(field):
+                    setattr(credential, field, value[field])
+            if value.get("totp_secret"):
+                credential.totp_secret = value["totp_secret"]
+            credential.metadata_json = {
+                **credential.metadata_json,
+                "account_security": {
+                    **dict(credential.metadata_json.get("account_security") or {}),
+                    "mfa": mfa,
+                },
+            }
+            session.commit()
+        _emit(
+            self.job_id,
+            "account_security_succeeded",
+            f"MFA 已启用并验证 {email}",
+            data={"email": email, "action": self.action},
+        )
+
+    def _record(self, email: str, status_value: str, error: str) -> None:
+        with SessionLocal() as session:
+            credential = session.get(Credential, email)
+            if credential is None:
+                return
+            security = dict(credential.metadata_json.get("account_security") or {})
+            key = "password" if self.action == "set_password" else "mfa"
+            security[key] = {
+                "requested": True,
+                "status": status_value,
+                "error": error,
+            }
+            credential.metadata_json = {**credential.metadata_json, "account_security": security}
+            session.commit()
+
+
 class WorkerManager:
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -761,7 +898,7 @@ class WorkerManager:
             candidate = (
                 select(Job.id)
                 .where(
-                    Job.kind == "pipeline.run",
+                    Job.kind.in_(["pipeline.run", "account.security"]),
                     or_(
                         Job.status == JobStatus.QUEUED,
                         (Job.status == JobStatus.RUNNING) & (Job.lease_expires_at < now),
@@ -892,6 +1029,10 @@ class WorkerManager:
             )
             heartbeat.start()
             try:
+                if job.kind == "account.security":
+                    result = AccountSecurityExecutor(job.id, job.payload).execute()
+                    self._finish(job.id, result=result)
+                    continue
                 run_id = str(job.payload.get("pipeline_run_id") or "")
                 retry_item_ids = job.payload.get("retry_item_ids")
                 item_ids = (

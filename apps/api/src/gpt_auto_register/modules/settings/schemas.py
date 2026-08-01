@@ -1,19 +1,27 @@
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RegistrationSettings(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=50)
     otp_timeout: int = Field(default=10, ge=1, le=300)
     allow_existing_login: bool = True
-    set_password: bool = True
+    password_mode: Literal["none", "random", "fixed"] = "random"
+    fixed_password: str = Field(default="", max_length=256)
     enable_authenticator_mfa: bool = False
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True
     proxy: str = ""
     proxy_pool: str = ""
+
+    @model_validator(mode="after")
+    def validate_fixed_password(self) -> "RegistrationSettings":
+        if self.password_mode == "fixed" and not self.fixed_password:
+            raise ValueError("固定密码模式必须填写密码")
+        return self
 
 
 class KakaoSettings(BaseModel):
@@ -135,3 +143,44 @@ class SmsCountryListResponse(BaseModel):
 
 class ConnectionTestResponse(BaseModel):
     message: str
+
+
+BackupSection = Literal["settings", "accounts", "credentials", "card_batches", "cards"]
+
+
+class BackupBundle(BaseModel):
+    format: Literal["gpt-auto-register-backup"]
+    version: Literal[1]
+    exported_at: datetime
+    sections: dict[str, list[dict[str, Any]]]
+
+
+class BackupPreviewRequest(BaseModel):
+    bundle: BackupBundle
+    sections: list[BackupSection]
+    mode: Literal["merge", "overwrite"] = "merge"
+
+
+class BackupSectionPreview(BaseModel):
+    incoming: int
+    added: int
+    updated: int
+    unchanged: int
+    removable: int = 0
+    protected: int = 0
+
+
+class BackupPreviewResponse(BaseModel):
+    sections: dict[str, BackupSectionPreview]
+
+
+class BackupImportRequest(BackupPreviewRequest):
+    conflict_policy: Literal["incoming", "local"] = "incoming"
+
+
+class BackupImportResponse(BaseModel):
+    added: int
+    updated: int
+    unchanged: int
+    removed: int
+    protected: int

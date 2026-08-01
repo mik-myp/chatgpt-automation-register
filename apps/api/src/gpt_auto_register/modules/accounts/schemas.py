@@ -17,6 +17,9 @@ class AccountSummary(BaseModel):
     failure_reason: str | None
     created_at: datetime
     updated_at: datetime
+    password_status: str = "not_set"
+    mfa_status: str = "not_enabled"
+    security_error: str | None = None
 
 
 class AccountDetail(AccountSummary):
@@ -61,6 +64,8 @@ class BulkAccountAction(StrEnum):
     RELEASE = "release"
     RESET = "reset"
     DELETE = "delete"
+    SET_PASSWORD = "set_password"
+    ENABLE_MFA = "enable_mfa"
 
 
 class BulkAccountRequest(BaseModel):
@@ -71,6 +76,7 @@ class BulkAccountRequest(BaseModel):
 class BulkAccountResponse(BaseModel):
     processed: int
     skipped: int
+    job_id: str | None = None
 
 
 class AccountMaintenanceAction(StrEnum):

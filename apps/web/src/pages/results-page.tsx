@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
+import { QRCodeSVG } from "qrcode.react"
 
 import {
   ListResultsApiResultsGetTokenFilter,
@@ -226,6 +227,38 @@ function CredentialField({
       <pre className="max-h-28 overflow-auto rounded-sm bg-muted/40 p-2 font-mono text-xs break-all whitespace-pre-wrap">
         {displayValue || "-"}
       </pre>
+    </div>
+  )
+}
+
+function TotpSetup({
+  email,
+  secret,
+}: {
+  email: string
+  secret?: string | null
+}) {
+  if (!secret) return null
+  const uri = `otpauth://totp/${encodeURIComponent(`ChatGPT:${email}`)}?${new URLSearchParams(
+    {
+      secret,
+      issuer: "ChatGPT",
+      algorithm: "SHA1",
+      digits: "6",
+      period: "30",
+    }
+  )}`
+  return (
+    <div className="grid gap-4 border-b py-4 sm:grid-cols-[160px_1fr] sm:items-center">
+      <div className="w-fit bg-white p-3">
+        <QRCodeSVG size={136} value={uri} />
+      </div>
+      <div>
+        <div className="text-xs font-medium">Authenticator App</div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          使用 Authenticator App 扫描二维码，或在应用中手动输入下方密钥。
+        </p>
+      </div>
     </div>
   )
 }
@@ -730,6 +763,10 @@ export function ResultsPage() {
                 label="密码"
                 value={detailMutation.data.password}
                 sensitive
+              />
+              <TotpSetup
+                email={detailMutation.data.email}
+                secret={detailMutation.data.totp_secret}
               />
               <CredentialField
                 label="Authenticator TOTP Secret"

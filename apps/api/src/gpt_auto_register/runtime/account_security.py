@@ -106,20 +106,32 @@ def enable_authenticator_mfa(
     )
     if trigger.status_code >= 400:
         raise RuntimeError(f"触发 MFA 邮箱验证失败: HTTP {trigger.status_code}")
-    otp_code = mail_provider.wait_for_otp(
-        email,
-        timeout=max(10, int(otp_timeout)),
-        issued_after=issued_after,
-    )
     otp_headers = flow._common_headers("https://auth.openai.com/email-verification")
     otp_headers["Content-Type"] = "application/json"
-    validated = flow.session.post(
-        "https://auth.openai.com/api/accounts/email-otp/validate",
-        headers=otp_headers,
-        json={"code": otp_code},
-        timeout=30,
-    )
-    continue_url = str(_json(validated, "验证 MFA 邮箱验证码").get("continue_url") or "")
+    continue_url = ""
+    for attempt in range(2):
+        otp_code = mail_provider.wait_for_otp(
+            email,
+            timeout=max(10, int(otp_timeout)),
+            issued_after=issued_after,
+        )
+        validated = flow.session.post(
+            "https://auth.openai.com/api/accounts/email-otp/validate",
+            headers=otp_headers,
+            json={"code": otp_code},
+            timeout=30,
+        )
+        if validated.status_code == 200:
+            continue_url = str(
+                _json(validated, "验证 MFA 邮箱验证码").get("continue_url") or ""
+            )
+            if continue_url:
+                break
+        if attempt == 0:
+            logger.warning("MFA 邮箱验证码首次验证失败，重新发送后重试")
+            issued_after = time.time()
+            if not flow.kickoff_otp_delivery("mfa_reauth_retry"):
+                flow.send_otp("https://auth.openai.com/email-verification")
     if not continue_url:
         raise RuntimeError("验证 MFA 邮箱验证码失败: 响应缺少继续地址")
     callback = flow.session.get(
@@ -168,7 +180,16 @@ def enable_authenticator_mfa(
     activation_data = _json(activation, "激活 Authenticator App MFA")
     if activation_data.get("success") is not True:
         raise RuntimeError("激活 Authenticator App MFA 失败: 服务端未确认成功")
-    logger.info("Authenticator App MFA 已启用")
+    confirmed = flow.session.get(
+        "https://chatgpt.com/api/auth/session",
+        headers=flow._common_headers("https://chatgpt.com/"),
+        timeout=30,
+    )
+    session_data = _json(confirmed, "确认 Authenticator App MFA 状态")
+    user = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
+    if user.get("mfa") is not True:
+        raise RuntimeError("Authenticator App MFA 激活后，服务端会话未确认启用")
+    logger.info("Authenticator App MFA 已启用并由服务端确认")
     return secret
 
 
@@ -177,7 +198,8 @@ def security_outcome(
     mail_provider: Any,
     options: dict[str, Any],
 ) -> dict[str, Any]:
-    password = password_outcome(flow, bool(options.get("set_password", True)))
+    mode = str(options.get("password_mode") or ("random" if options.get("set_password", True) else "none"))
+    password = password_outcome(flow, mode != "none")
     mfa_requested = bool(options.get("enable_authenticator_mfa", False))
     mfa: dict[str, Any] = {
         "requested": mfa_requested,

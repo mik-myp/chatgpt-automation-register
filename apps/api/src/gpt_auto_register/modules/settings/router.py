@@ -4,7 +4,13 @@ from sqlalchemy import select
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.models.kakao import KakaoCard
 from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient
+from gpt_auto_register.modules.settings.backup import export_bundle, import_bundle, preview_bundle
 from gpt_auto_register.modules.settings.schemas import (
+    BackupBundle,
+    BackupImportRequest,
+    BackupImportResponse,
+    BackupPreviewRequest,
+    BackupPreviewResponse,
     ConnectionTestResponse,
     SmsCountry,
     SmsCountryListResponse,
@@ -26,6 +32,21 @@ def get_settings(db: DatabaseSession) -> SystemSettingsResponse:
 @router.put("", response_model=SystemSettingsResponse)
 def update_settings(request: SystemSettingsUpdate, db: DatabaseSession) -> SystemSettingsResponse:
     return SettingsService(db).update(request)
+
+
+@router.get("/data/export", response_model=BackupBundle)
+def export_data(db: DatabaseSession) -> BackupBundle:
+    return export_bundle(db)
+
+
+@router.post("/data/preview", response_model=BackupPreviewResponse)
+def preview_data(request: BackupPreviewRequest, db: DatabaseSession) -> BackupPreviewResponse:
+    return preview_bundle(db, request)
+
+
+@router.post("/data/import", response_model=BackupImportResponse)
+def import_data(request: BackupImportRequest, db: DatabaseSession) -> BackupImportResponse:
+    return import_bundle(db, request)
 
 
 @router.post("/sms/test", response_model=SmsTestResponse)

@@ -28,6 +28,28 @@ from gpt_auto_register.modules.accounts.service import (
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
+def _summary(
+    account: object, credential: object | None = None
+) -> AccountDetail | dict[str, object]:
+    value = AccountDetail.model_validate(account).model_dump()
+    value.pop("password", None)
+    value.pop("client_id", None)
+    value.pop("refresh_token", None)
+    value.pop("mail_url", None)
+    if credential is None:
+        return value
+    metadata = getattr(credential, "metadata_json", {}) or {}
+    security = metadata.get("account_security", {}) if isinstance(metadata, dict) else {}
+    password = security.get("password", {}) if isinstance(security, dict) else {}
+    mfa = security.get("mfa", {}) if isinstance(security, dict) else {}
+    password_default = "set" if getattr(credential, "password", None) else "not_set"
+    mfa_default = "enabled" if getattr(credential, "totp_secret", None) else "not_enabled"
+    value["password_status"] = str(password.get("status") or password_default)
+    value["mfa_status"] = str(mfa.get("status") or mfa_default)
+    value["security_error"] = str(mfa.get("error") or password.get("error") or "") or None
+    return value
+
+
 def _handle_account_error(error: Exception) -> HTTPException:
     if isinstance(error, AccountNotFoundError):
         return HTTPException(status.HTTP_404_NOT_FOUND, "账号不存在")
@@ -52,7 +74,13 @@ def list_accounts(
         limit=limit,
         offset=offset,
     )
-    return AccountListResponse(items=items, total=total, limit=limit, offset=offset)
+    credentials = AccountRepository(db).credentials([item.email for item in items])
+    return AccountListResponse(
+        items=[_summary(item, credentials.get(item.email)) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/stats", response_model=AccountStats)
