@@ -1,28 +1,19 @@
-from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 
 from gpt_auto_register.api.dependencies import DatabaseSession
-from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.modules.results.plus_checker import check_plus
 from gpt_auto_register.modules.results.repository import ResultRepository
 from gpt_auto_register.modules.results.schemas import (
     BulkResultRequest,
     BulkResultResponse,
     ExportResultsResponse,
-    PlusCheckItem,
-    PlusCheckRequest,
-    PlusCheckResponse,
-    PublishResultsRequest,
-    PublishResultsResponse,
     RegistrationResultDetail,
     RegistrationResultListResponse,
     RegistrationResultSummary,
     ResultTokenFilter,
 )
 from gpt_auto_register.modules.settings.service import SettingsService
-from gpt_auto_register.worker.runtime_gateway import runtime_gateway
 
 router = APIRouter(prefix="/results", tags=["registration-results"])
 
@@ -127,105 +118,6 @@ def export_results(request: BulkResultRequest, db: DatabaseSession) -> ExportRes
             for item in ResultRepository(db).export(emails, request.all)
         ]
     )
-
-
-@router.post("/publish", response_model=PublishResultsResponse)
-def publish_results(
-    request: PublishResultsRequest,
-    db: DatabaseSession,
-) -> PublishResultsResponse:
-    emails = list(dict.fromkeys(email.lower() for email in request.emails if email.strip()))
-    if not request.all and not emails:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择要发布的注册结果")
-    values = ResultRepository(db).export(emails, request.all)
-    export = SettingsService(db).export_internal()
-    for name in ("cpa", "sub2api"):
-        export[name]["enabled"] = name in request.targets
-    succeeded = failed = 0
-    errors: list[str] = []
-    for value in values:
-        result = runtime_gateway.call(
-            {
-                "action": "export",
-                "credential": RegistrationResultDetail.model_validate(value).model_dump(
-                    mode="json", exclude={"totp_secret"}
-                ),
-                "export": export,
-            },
-            timeout=300,
-        )
-        target_results = dict(result.get("results") or {})
-        failures = [
-            f"{value.email} / {target}: {target_results.get(target, {}).get('error', '导出失败')}"
-            for target in request.targets
-            if not target_results.get(target, {}).get("ok")
-        ]
-        if result.get("ok") and not failures:
-            succeeded += 1
-        else:
-            failed += 1
-            errors.extend(failures or [f"{value.email}: {result.get('error', '导出失败')}"])
-    return PublishResultsResponse(
-        processed=len(values),
-        succeeded=succeeded,
-        failed=failed,
-        errors=errors[:20],
-    )
-
-
-@router.post("/check-plus", response_model=PlusCheckResponse)
-def check_plus_results(
-    request: PlusCheckRequest,
-    db: DatabaseSession,
-) -> PlusCheckResponse:
-    emails = list(
-        dict.fromkeys(email.strip().lower() for email in request.emails if email.strip())
-    )
-    if not request.all and not emails:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择要检查的注册结果")
-    values = ResultRepository(db).export(emails, request.all)
-    by_email = {value.email: value for value in values}
-    selected_emails = list(by_email) if request.all else emails
-    proxy = request.proxy.strip() or SettingsService(db).registration_internal().proxy.strip()
-    jobs = [
-        (email, str(by_email[email].access_token), proxy)
-        for email in selected_emails
-        if email in by_email and by_email[email].access_token
-    ]
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(jobs)))) as executor:
-        checked = list(executor.map(lambda args: check_plus(args[1], args[2]), jobs))
-    checked_by_email = {
-        email: result for (email, _, _), result in zip(jobs, checked, strict=True)
-    }
-    checked_at = utc_now().isoformat()
-    items: list[PlusCheckItem] = []
-    for email in selected_emails:
-        credential = by_email.get(email)
-        if credential is None:
-            result: dict[str, object] = {
-                "state": "not_found",
-                "label": "未找到",
-                "is_plus": None,
-                "error": "注册结果不存在",
-            }
-        elif not credential.access_token:
-            result = {
-                "state": "no_access_token",
-                "label": "无 Access Token",
-                "is_plus": None,
-                "error": "",
-            }
-        else:
-            result = checked_by_email[email]
-        item = PlusCheckItem.model_validate({"email": email, **result})
-        items.append(item)
-        if credential is not None:
-            credential.metadata_json = {
-                **(credential.metadata_json or {}),
-                "plus_check": {**result, "checked_at": checked_at},
-            }
-    db.commit()
-    return PlusCheckResponse(items=items)
 
 
 @router.post("/batch-delete", response_model=BulkResultResponse)

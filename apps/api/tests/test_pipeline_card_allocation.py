@@ -25,7 +25,12 @@ from gpt_auto_register.db.models.pipeline import (
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.kakao.client import KakaoClient
-from gpt_auto_register.worker import manager
+from gpt_auto_register.worker import executor_support, pipeline_executor
+
+
+def configure_executor(monkeypatch: pytest.MonkeyPatch, factory: object) -> None:
+    monkeypatch.setattr(pipeline_executor, "SessionLocal", factory)
+    monkeypatch.setattr(executor_support, "SessionLocal", factory)
 
 
 def test_first_card_allocation_initializes_counters(
@@ -42,14 +47,16 @@ def test_first_card_allocation_initializes_counters(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    configure_executor(monkeypatch, factory)
     monkeypatch.setattr(
         CardAllocator,
         "select",
         lambda _self, _count: (["test-card"], []),
     )
 
-    mapping = manager.PipelineExecutor("allocation-job", run.id)._allocate_cards([item.id])
+    mapping = pipeline_executor.PipelineExecutor("allocation-job", run.id)._allocate_cards(
+        [item.id]
+    )
 
     with factory() as session:
         allocation = session.get(PipelineCardAllocation, (run.id, card.id))
@@ -76,8 +83,8 @@ def test_first_registration_result_initializes_credential_metadata(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
-    manager.PipelineExecutor("unused", run.id)._save_registration_success(
+    configure_executor(monkeypatch, factory)
+    pipeline_executor.PipelineExecutor("unused", run.id)._save_registration_success(
         item.id,
         registration.id,
         {
@@ -120,8 +127,8 @@ def test_canceled_pipeline_does_not_persist_registration_result(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
-    manager.PipelineExecutor("unused", run.id)._save_registration_success(
+    configure_executor(monkeypatch, factory)
+    pipeline_executor.PipelineExecutor("unused", run.id)._save_registration_success(
         item.id,
         registration.id,
         {"email": email, "password": "must-not-be-saved"},
@@ -129,6 +136,40 @@ def test_canceled_pipeline_does_not_persist_registration_result(
 
     with factory() as session:
         assert session.get(Credential, email) is None
+
+
+def test_pipeline_reports_canceled_when_canceled_during_execution(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = PipelineRun(
+        target_count=1,
+        kakao_enabled=False,
+        config_snapshot={"registration": {"concurrency": 1}},
+    )
+    job = Job(id="cancel-during-execution", kind="pipeline.run", payload={})
+    db_session.add_all([run, job])
+    db_session.flush()
+    item = PipelineItem(pipeline_run_id=run.id, position=0)
+    db_session.add(item)
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    configure_executor(monkeypatch, factory)
+
+    def cancel_item(*_args: object, **_kwargs: object) -> bool:
+        with factory() as session:
+            saved_run = session.get(PipelineRun, run.id)
+            assert saved_run is not None
+            saved_run.status = PipelineStatus.CANCELED
+            session.commit()
+        return False
+
+    monkeypatch.setattr(pipeline_executor.PipelineExecutor, "_execute_item", cancel_item)
+
+    result = pipeline_executor.PipelineExecutor(job.id, run.id).execute()
+
+    assert result["status"] == "canceled"
 
 
 def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
@@ -165,7 +206,7 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    configure_executor(monkeypatch, factory)
     monkeypatch.setattr(
         KakaoClient,
         "check_eligibility",
@@ -180,7 +221,7 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
         },
     )
 
-    manager.PipelineExecutor(job.id, run.id)._run_kakao(
+    pipeline_executor.PipelineExecutor(job.id, run.id)._run_kakao(
         item.id,
         {"email": email, "access_token": "access-token"},
         card.code,
@@ -230,7 +271,7 @@ def test_kakao_submission_skips_email_with_historical_payment_link(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    configure_executor(monkeypatch, factory)
 
     def unexpected_call(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("已完成 Kakao 提取的邮箱不应再次调用上游")
@@ -238,7 +279,7 @@ def test_kakao_submission_skips_email_with_historical_payment_link(
     monkeypatch.setattr(KakaoClient, "check_eligibility", unexpected_call)
     monkeypatch.setattr(KakaoClient, "create_tasks", unexpected_call)
 
-    manager.PipelineExecutor(job.id, run.id)._run_kakao(
+    pipeline_executor.PipelineExecutor(job.id, run.id)._run_kakao(
         item.id,
         {"email": email, "access_token": "access-token"},
         "unused-card",
@@ -298,7 +339,7 @@ def test_kakao_pipeline_executes_existing_credentials(
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    configure_executor(monkeypatch, factory)
     monkeypatch.setattr(
         KakaoClient,
         "check_eligibility",
@@ -312,7 +353,7 @@ def test_kakao_pipeline_executes_existing_credentials(
         },
     )
 
-    result = manager.PipelineExecutor(job.id, run.id).execute()
+    result = pipeline_executor.PipelineExecutor(job.id, run.id).execute()
 
     with factory() as session:
         saved_run = session.get(PipelineRun, run.id)
@@ -345,8 +386,8 @@ def test_invalid_state_retries_with_a_fresh_registration_process(
     db_session.add(PipelineItem(pipeline_run_id=run.id, position=0))
     db_session.commit()
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
-    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+    configure_executor(monkeypatch, factory)
+    monkeypatch.setattr(pipeline_executor.time, "sleep", lambda _seconds: None)
     attempts = 0
 
     def register(_payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
@@ -356,9 +397,9 @@ def test_invalid_state_retries_with_a_fresh_registration_process(
             return {"ok": False, "error": "invalid_state"}
         return {"ok": True, "credential": {"email": email, "access_token": "token"}}
 
-    monkeypatch.setattr(manager, "_legacy_call", register)
+    monkeypatch.setattr(pipeline_executor, "_legacy_call", register)
 
-    result = manager.PipelineExecutor(job.id, run.id).execute()
+    result = pipeline_executor.PipelineExecutor(job.id, run.id).execute()
 
     with factory() as session:
         saved_run = session.get(PipelineRun, run.id)
@@ -384,14 +425,14 @@ def test_pipeline_is_failed_when_every_registration_fails(
     db_session.add(PipelineItem(pipeline_run_id=run.id, position=0))
     db_session.commit()
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    configure_executor(monkeypatch, factory)
     monkeypatch.setattr(
-        manager,
+        pipeline_executor,
         "_legacy_call",
         lambda _payload, **_kwargs: {"ok": False, "error": "registration rejected"},
     )
 
-    manager.PipelineExecutor(job.id, run.id).execute()
+    pipeline_executor.PipelineExecutor(job.id, run.id).execute()
 
     with factory() as session:
         saved_run = session.get(PipelineRun, run.id)

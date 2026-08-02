@@ -17,15 +17,18 @@
 
 全部用 curl_cffi impersonate="chrome110" 模拟浏览器 TLS 指纹，绕过 CF Bot 拦截。
 """
+
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -113,18 +116,20 @@ def _import_cffi():
     """惰性 import curl_cffi。失败抛 RuntimeError。"""
     try:
         from curl_cffi import requests as cffi_requests
+
         return cffi_requests
     except ImportError as e:
-        raise RuntimeError(f"curl_cffi 未安装，无法导出（pip install curl-cffi）: {e}")
+        raise RuntimeError(f"curl_cffi 未安装，无法导出（pip install curl-cffi）: {e}") from e
 
 
 def _import_cffi_mime():
     """惰性 import CurlMime。"""
     try:
         from curl_cffi import CurlMime
+
         return CurlMime
     except ImportError as e:
-        raise RuntimeError(f"curl_cffi CurlMime 不可用: {e}")
+        raise RuntimeError(f"curl_cffi CurlMime 不可用: {e}") from e
 
 
 # ──────────────────────── 核心：刷新 Codex access_token ────────────────────────
@@ -169,18 +174,14 @@ def refresh_codex_token(refresh_token: str, *, timeout: int = DEFAULT_TIMEOUT) -
 
     if resp.status_code != 200:
         body_text = ""
-        try:
+        with contextlib.suppress(Exception):
             body_text = (resp.text or "")[:300]
-        except Exception:
-            pass
-        raise RuntimeError(
-            f"OpenAI token 刷新失败 HTTP {resp.status_code}: {body_text}"
-        )
+        raise RuntimeError(f"OpenAI token 刷新失败 HTTP {resp.status_code}: {body_text}")
 
     try:
         data = resp.json()
-    except Exception:
-        raise RuntimeError("OpenAI token 刷新返回非 JSON")
+    except Exception as e:
+        raise RuntimeError("OpenAI token 刷新返回非 JSON") from e
 
     if not isinstance(data, dict) or not data.get("access_token"):
         raise RuntimeError(f"OpenAI token 刷新返回无 access_token: {str(data)[:200]}")
@@ -205,12 +206,11 @@ def _build_compat_id_token(*, access_token: str, email: str) -> str:
     profile = _get_profile(payload)
     email_from_token = (profile.get("email") or payload.get("email") or email or "").strip()
     email_verified = bool(profile.get("email_verified", payload.get("email_verified", True)))
-    account_id = str(auth_info.get("chatgpt_account_id") or auth_info.get("account_id") or "").strip()
+    account_id = str(
+        auth_info.get("chatgpt_account_id") or auth_info.get("account_id") or ""
+    ).strip()
     user_id = str(
-        auth_info.get("chatgpt_user_id")
-        or auth_info.get("user_id")
-        or payload.get("sub")
-        or ""
+        auth_info.get("chatgpt_user_id") or auth_info.get("user_id") or payload.get("sub") or ""
     ).strip()
     iat = int(payload.get("iat") or 0)
     exp = int(payload.get("exp") or 0)
@@ -220,13 +220,15 @@ def _build_compat_id_token(*, access_token: str, email: str) -> str:
         or f"compat_session_{(account_id or user_id or 'unknown').replace('-', '')[:24]}"
     ).strip()
     plan_type = str(auth_info.get("chatgpt_plan_type") or "free").strip() or "free"
+    organization_seed = account_id or email_from_token or user_id
     organization_id = str(
         auth_info.get("organization_id")
-        or f"org-{hashlib.sha1((account_id or email_from_token or user_id).encode('utf-8')).hexdigest()[:24]}"
+        or f"org-{hashlib.sha1(organization_seed.encode()).hexdigest()[:24]}"
     )
+    project_seed = f"{organization_id}:{account_id or user_id}"
     project_id = str(
         auth_info.get("project_id")
-        or f"proj_{hashlib.sha1((organization_id + ':' + (account_id or user_id)).encode('utf-8')).hexdigest()[:24]}"
+        or f"proj_{hashlib.sha1(project_seed.encode()).hexdigest()[:24]}"
     )
 
     compat_auth = {
@@ -236,14 +238,15 @@ def _build_compat_id_token(*, access_token: str, email: str) -> str:
         "chatgpt_subscription_active_until": auth_info.get("chatgpt_subscription_active_until"),
         "chatgpt_subscription_last_checked": auth_info.get("chatgpt_subscription_last_checked"),
         "chatgpt_user_id": user_id,
-        "completed_platform_onboarding": bool(auth_info.get("completed_platform_onboarding", False)),
+        "completed_platform_onboarding": bool(
+            auth_info.get("completed_platform_onboarding", False)
+        ),
         "groups": auth_info.get("groups", []),
         "is_org_owner": bool(auth_info.get("is_org_owner", True)),
         "localhost": bool(auth_info.get("localhost", True)),
         "organization_id": organization_id,
-        "organizations": auth_info.get("organizations") or [
-            {"id": organization_id, "is_default": True, "role": "owner", "title": "Personal"}
-        ],
+        "organizations": auth_info.get("organizations")
+        or [{"id": organization_id, "is_default": True, "role": "owner", "title": "Personal"}],
         "project_id": project_id,
         "user_id": str(auth_info.get("user_id") or user_id or "").strip(),
     }
@@ -268,7 +271,11 @@ def _build_compat_id_token(*, access_token: str, email: str) -> str:
     }
 
     header = {"alg": "RS256", "typ": "JWT", "kid": "compat"}
-    signature = base64.urlsafe_b64encode(b"compat_signature_for_cpa_parsing_only").decode("ascii").rstrip("=")
+    signature = (
+        base64.urlsafe_b64encode(b"compat_signature_for_cpa_parsing_only")
+        .decode("ascii")
+        .rstrip("=")
+    )
     return f"{_b64url_json(header)}.{_b64url_json(compat_payload)}.{signature}"
 
 
@@ -314,8 +321,9 @@ def build_cpa_token_json(cred: dict) -> dict:
 # ──────────────────────── CPA：上传 ────────────────────────
 
 
-def export_to_cpa(cred: dict, cfg: dict, *,
-                    log_fn: Optional[Callable[[str, str], None]] = None) -> dict:
+def export_to_cpa(
+    cred: dict, cfg: dict, *, log_fn: Callable[[str, str], None] | None = None
+) -> dict:
     """CPA multipart 上传。"""
     log = log_fn or (lambda m, lvl="info": logger.info(m))
 
@@ -382,13 +390,19 @@ def export_to_cpa(cred: dict, cfg: dict, *,
             )
             if resp.status_code in (200, 201):
                 log(f"[CPA] ✅ 上传成功 {filename}", "ok")
-                return {"ok": True, "email": email, "file_name": filename,
-                        "message": f"CPA 上传成功: {filename}"}
+                return {
+                    "ok": True,
+                    "email": email,
+                    "file_name": filename,
+                    "message": f"CPA 上传成功: {filename}",
+                }
             msg = f"HTTP {resp.status_code}"
             try:
                 detail = resp.json()
                 if isinstance(detail, dict):
-                    msg = str(detail.get("message") or detail.get("error") or detail.get("detail") or msg)
+                    msg = str(
+                        detail.get("message") or detail.get("error") or detail.get("detail") or msg
+                    )
             except Exception:
                 msg = f"{msg}: {body_preview}"
             last_err = msg
@@ -410,10 +424,8 @@ def export_to_cpa(cred: dict, cfg: dict, *,
             return {"ok": False, "error": str(e), "email": email, "file_name": filename}
         finally:
             if mime is not None:
-                try:
+                with contextlib.suppress(Exception):
                     mime.close()
-                except Exception:
-                    pass
     return {"ok": False, "error": last_err or "重试耗尽", "email": email, "file_name": filename}
 
 
@@ -451,11 +463,14 @@ def build_sub2api_payload(cred: dict, group_ids: list[int]) -> dict:
                     if organization_id:
                         break
     if not organization_id:
-        organization_id = str(access_auth.get("organization_id") or access_auth.get("poid") or "").strip()
+        organization_id = str(
+            access_auth.get("organization_id") or access_auth.get("poid") or ""
+        ).strip()
 
-    client_id = str(
-        cred.get("client_id") or access_payload.get("client_id") or CODEX_CLIENT_ID
-    ).strip() or CODEX_CLIENT_ID
+    client_id = (
+        str(cred.get("client_id") or access_payload.get("client_id") or CODEX_CLIENT_ID).strip()
+        or CODEX_CLIENT_ID
+    )
 
     chatgpt_account_id = str(
         access_auth.get("chatgpt_account_id") or cred.get("account_id") or ""
@@ -489,8 +504,9 @@ def build_sub2api_payload(cred: dict, group_ids: list[int]) -> dict:
 # ──────────────────────── SUB2API：上传 ────────────────────────
 
 
-def export_to_sub2api(cred: dict, cfg: dict, *,
-                        log_fn: Optional[Callable[[str, str], None]] = None) -> dict:
+def export_to_sub2api(
+    cred: dict, cfg: dict, *, log_fn: Callable[[str, str], None] | None = None
+) -> dict:
     """SUB2API x-api-key 直连上传（无登录流程）。"""
     log = log_fn or (lambda m, lvl="info": logger.info(m))
 
@@ -519,8 +535,7 @@ def export_to_sub2api(cred: dict, cfg: dict, *,
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             log(
-                f"[SUB2API] 第 {attempt}/{MAX_ATTEMPTS} 次上传 {email} "
-                f"(group_ids={group_ids})...",
+                f"[SUB2API] 第 {attempt}/{MAX_ATTEMPTS} 次上传 {email} (group_ids={group_ids})...",
                 "info",
             )
             resp = cffi.post(
@@ -541,15 +556,18 @@ def export_to_sub2api(cred: dict, cfg: dict, *,
                 except Exception:
                     pass
                 log(f"[SUB2API] ✅ 上传成功 {email} (id={new_id or 'unknown'})", "ok")
-                return {"ok": True, "email": email, "account_id": new_id,
-                        "message": f"SUB2API 上传成功 #{new_id or 'unknown'}"}
+                return {
+                    "ok": True,
+                    "email": email,
+                    "account_id": new_id,
+                    "message": f"SUB2API 上传成功 #{new_id or 'unknown'}",
+                }
             msg = f"HTTP {resp.status_code}"
             try:
                 detail = resp.json()
                 if isinstance(detail, dict):
                     msg = str(
-                        detail.get("message") or detail.get("msg")
-                        or detail.get("error") or msg
+                        detail.get("message") or detail.get("msg") or detail.get("error") or msg
                     )
             except Exception:
                 msg = f"{msg} - {(resp.text or '')[:200]}"
@@ -604,16 +622,15 @@ def test_cpa(cfg: dict) -> dict:
         return {"ok": True, "message": f"CPA 连通正常 + 密钥有效 (HTTP {resp.status_code})"}
     if resp.status_code in (401, 403):
         body = ""
-        try:
+        with contextlib.suppress(Exception):
             body = (resp.text or "")[:200]
-        except Exception:
-            pass
-        raise RuntimeError(
-            f"CPA 鉴权失败 (HTTP {resp.status_code})：管理密钥错误。响应：{body}"
-        )
+        raise RuntimeError(f"CPA 鉴权失败 (HTTP {resp.status_code})：管理密钥错误。响应：{body}")
     # 405 Method Not Allowed 表示路径对但不允许 GET，至少 URL 通了
     if resp.status_code == 405:
-        return {"ok": True, "message": f"CPA URL 可达（HTTP 405），但无法用 GET 验证密钥；请实际上传一次确认"}
+        return {
+            "ok": True,
+            "message": "CPA URL 可达（HTTP 405），但无法用 GET 验证密钥；请实际上传一次确认",
+        }
     raise RuntimeError(f"CPA 返回 HTTP {resp.status_code}: {(resp.text or '')[:200]}")
 
 
@@ -650,10 +667,13 @@ def test_sub2api(cfg: dict) -> dict:
 # ──────────────────────── 统一入口（注册完成后调用） ────────────────────────
 
 
-def run_exports(cred: dict, *,
-                  cpa_cfg: Optional[dict] = None,
-                  sub2api_cfg: Optional[dict] = None,
-                  log_fn: Optional[Callable[[str, str], None]] = None) -> dict:
+def run_exports(
+    cred: dict,
+    *,
+    cpa_cfg: dict | None = None,
+    sub2api_cfg: dict | None = None,
+    log_fn: Callable[[str, str], None] | None = None,
+) -> dict:
     """注册完成后的可选导出入口。
 
     步骤：
@@ -679,9 +699,9 @@ def run_exports(cred: dict, *,
         fresh = refresh_codex_token(cred.get("refresh_token", ""))
         cred = {
             **cred,
-            "access_token":  fresh["access_token"],
+            "access_token": fresh["access_token"],
             "refresh_token": fresh.get("refresh_token") or cred.get("refresh_token"),
-            "id_token":      fresh.get("id_token") or cred.get("id_token", ""),
+            "id_token": fresh.get("id_token") or cred.get("id_token", ""),
         }
         log(
             f"[exporter] ✅ Codex token 刷新成功 "

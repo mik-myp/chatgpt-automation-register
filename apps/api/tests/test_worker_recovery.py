@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.models.jobs import Job, JobStatus
+from gpt_auto_register.db.models.pipeline import PipelineRun, PipelineStatus
 from gpt_auto_register.worker import manager
 
 
@@ -54,3 +55,40 @@ def test_worker_reclaims_running_job_without_lease(
     assert claimed.id == job.id
     assert claimed.lease_owner is not None
     assert claimed.attempts == 1
+
+
+def test_retryable_job_failure_requeues_pipeline_without_marking_it_failed(
+    db_session: Session,
+    monkeypatch,
+) -> None:
+    run = PipelineRun(
+        status=PipelineStatus.RUNNING,
+        target_count=1,
+        config_snapshot={},
+    )
+    worker = manager.WorkerManager()
+    db_session.add(run)
+    db_session.flush()
+    job = Job(
+        kind="pipeline.run",
+        pipeline_run_id=run.id,
+        status=JobStatus.RUNNING,
+        payload={"pipeline_run_id": run.id},
+        attempts=1,
+        max_attempts=3,
+        lease_owner=worker.worker_id,
+    )
+    db_session.add(job)
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+
+    status = worker._finish(job.id, error="temporary failure")
+
+    with factory() as session:
+        saved_job = session.get(Job, job.id)
+        saved_run = session.get(PipelineRun, run.id)
+        assert status == JobStatus.QUEUED
+        assert saved_job is not None and saved_job.status == JobStatus.QUEUED
+        assert saved_run is not None and saved_run.status == PipelineStatus.QUEUED
+        assert saved_run.finished_at is None

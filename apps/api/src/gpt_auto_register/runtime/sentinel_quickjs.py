@@ -26,6 +26,7 @@ Implementation:
 Public API:
   - `get_sentinel_token_via_quickjs(session, device_id, flow, ...) -> str | None`
 """
+
 from __future__ import annotations
 
 import json
@@ -227,11 +228,11 @@ def get_sentinel_token_via_quickjs(
             platform = "Win32"
     if vendor is None:
         if "firefox" in ua_l:
-            vendor = ""                       # Firefox navigator.vendor 为空串
+            vendor = ""  # Firefox navigator.vendor 为空串
         elif "chrome" in ua_l:
             vendor = "Google Inc."
         else:
-            vendor = "Apple Computer, Inc."   # Safari / iOS
+            vendor = "Apple Computer, Inc."  # Safari / iOS
     hw_conc = int(hardware_concurrency) if hardware_concurrency else 8
 
     env_payload = {
@@ -269,7 +270,11 @@ def get_sentinel_token_via_quickjs(
             return None
 
         challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms,
+            session,
+            device_id=did,
+            flow=flow,
+            request_p=request_p,
+            timeout_ms=timeout_ms,
         )
         c_value = str(challenge.get("token") or "").strip()
         if not c_value:
@@ -277,12 +282,14 @@ def get_sentinel_token_via_quickjs(
             return None
 
         solve_payload = dict(env_payload)
-        solve_payload.update({
-            "request_p": request_p,
-            "challenge": challenge,
-            "flow": flow,
-            "behavior_duration_ms": 4200,
-        })
+        solve_payload.update(
+            {
+                "request_p": request_p,
+                "challenge": challenge,
+                "flow": flow,
+                "behavior_duration_ms": 4200,
+            }
+        )
         solved = _run_quickjs_action(
             action="solve",
             sdk_file=sdk_file,

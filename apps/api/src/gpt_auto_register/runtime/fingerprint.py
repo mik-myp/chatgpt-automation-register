@@ -9,6 +9,7 @@
   - browser_type 标识（mac_safari / ios_safari / chrome / firefox）
   - fallback_impersonates 同家族回退列表
 """
+
 from __future__ import annotations
 
 import random
@@ -70,10 +71,10 @@ _IOS_SAFARI_VERSIONS = [
 ]
 
 _IPHONE_SCREENS = [
-    "390x844",   # iPhone 13 / 14
-    "393x852",   # iPhone 14 Pro / 15
-    "428x926",   # iPhone 13 Pro Max / 14 Plus
-    "430x932",   # iPhone 14 Pro Max / 15 Plus
+    "390x844",  # iPhone 13 / 14
+    "393x852",  # iPhone 14 Pro / 15
+    "428x926",  # iPhone 13 Pro Max / 14 Plus
+    "430x932",  # iPhone 14 Pro Max / 15 Plus
 ]
 
 # ---------------------------------------------------------------------------
@@ -196,18 +197,18 @@ _COUNTRY_PROFILES = {
     # 北美
     "US": {
         "timezones": [
-            ("America/New_York", 0.4),      # 东部（数据中心多）
-            ("America/Los_Angeles", 0.3),   # 西部
-            ("America/Chicago", 0.2),       # 中部
-            ("America/Denver", 0.1),        # 山地
+            ("America/New_York", 0.4),  # 东部（数据中心多）
+            ("America/Los_Angeles", 0.3),  # 西部
+            ("America/Chicago", 0.2),  # 中部
+            ("America/Denver", 0.1),  # 山地
         ],
         "languages": ["en-US", "en", "es-US", "es", "zh-CN"],
     },
     "CA": {
         "timezones": [
-            ("America/Toronto", 0.6),       # 东部（安大略）
-            ("America/Vancouver", 0.3),     # 西部（BC）
-            ("America/Edmonton", 0.1),      # 山地（阿尔伯塔）
+            ("America/Toronto", 0.6),  # 东部（安大略）
+            ("America/Vancouver", 0.3),  # 西部（BC）
+            ("America/Edmonton", 0.1),  # 山地（阿尔伯塔）
         ],
         "languages": ["en-CA", "en-US", "en", "fr-CA", "fr"],
     },
@@ -291,9 +292,9 @@ _COUNTRY_PROFILES = {
     },
     "RU": {
         "timezones": [
-            ("Europe/Moscow", 0.7),         # 莫斯科（MSK，主要数据中心）
-            ("Asia/Yekaterinburg", 0.15),   # 叶卡捷琳堡（+5）
-            ("Asia/Novosibirsk", 0.15),     # 新西伯利亚（+7）
+            ("Europe/Moscow", 0.7),  # 莫斯科（MSK，主要数据中心）
+            ("Asia/Yekaterinburg", 0.15),  # 叶卡捷琳堡（+5）
+            ("Asia/Novosibirsk", 0.15),  # 新西伯利亚（+7）
         ],
         "languages": ["ru-RU", "ru", "en-US", "en"],
     },
@@ -320,9 +321,9 @@ _COUNTRY_PROFILES = {
     # 大洋洲
     "AU": {
         "timezones": [
-            ("Australia/Sydney", 0.5),      # 悉尼（NSW，数据中心多）
-            ("Australia/Melbourne", 0.3),   # 墨尔本（VIC）
-            ("Australia/Brisbane", 0.2),    # 布里斯班（QLD）
+            ("Australia/Sydney", 0.5),  # 悉尼（NSW，数据中心多）
+            ("Australia/Melbourne", 0.3),  # 墨尔本（VIC）
+            ("Australia/Brisbane", 0.2),  # 布里斯班（QLD）
         ],
         "languages": ["en-AU", "en-US", "en", "zh-CN", "zh"],
     },
@@ -368,8 +369,8 @@ _LANGUAGES = [
 _BROWSER_WEIGHTS = [
     ("mac_safari", 30),
     ("ios_safari", 15),
-    ("chrome",     35),
-    ("firefox",    20),
+    ("chrome", 35),
+    ("firefox", 20),
 ]
 
 _BROWSER_TYPES = [t for t, _ in _BROWSER_WEIGHTS]
@@ -394,31 +395,31 @@ _HARDWARE_PROFILES = {
         "navigator_platform": "MacIntel",
         "navigator_vendor": "Apple Computer, Inc.",
         "hardware_concurrency": [8, 10, 12, 16],
-        "device_memory": [None],          # Safari 不暴露 deviceMemory
+        "device_memory": [None],  # Safari 不暴露 deviceMemory
         "max_touch_points": [0],
-        "device_pixel_ratio": [2.0],      # Retina 必定 2.0
+        "device_pixel_ratio": [2.0],  # Retina 必定 2.0
     },
     "ios_safari": {
         "navigator_platform": "iPhone",
         "navigator_vendor": "Apple Computer, Inc.",
-        "hardware_concurrency": [4, 6],   # A15/A16/A17
-        "device_memory": [None],          # iOS Safari 不暴露
-        "max_touch_points": [5],          # 触摸屏
+        "hardware_concurrency": [4, 6],  # A15/A16/A17
+        "device_memory": [None],  # iOS Safari 不暴露
+        "max_touch_points": [5],  # 触摸屏
         "device_pixel_ratio": [2.0, 3.0],
     },
     "chrome": {
         "navigator_platform": "Win32",
         "navigator_vendor": "Google Inc.",
         "hardware_concurrency": [4, 6, 8, 12, 16, 24],
-        "device_memory": [4, 8],          # spec 封顶 8
+        "device_memory": [4, 8],  # spec 封顶 8
         "max_touch_points": [0],
         "device_pixel_ratio": [1.0, 1.25, 1.5],
     },
     "firefox": {
         "navigator_platform": "Win32",
-        "navigator_vendor": "",           # Firefox navigator.vendor 为空串
+        "navigator_vendor": "",  # Firefox navigator.vendor 为空串
         "hardware_concurrency": [4, 6, 8, 12, 16],
-        "device_memory": [None],          # Firefox 不暴露 deviceMemory
+        "device_memory": [None],  # Firefox 不暴露 deviceMemory
         "max_touch_points": [0],
         "device_pixel_ratio": [1.0, 1.5],
     },
@@ -440,10 +441,13 @@ def _apply_hardware(fp: dict, r: random.Random) -> None:
 # 指纹生成
 # ---------------------------------------------------------------------------
 
+
 def _gen_mac_safari(r: random.Random) -> dict:
     safari = r.choice(_SAFARI_VERSIONS)
     macos_ver = r.choice(safari["macos_versions"])
-    others = [s["impersonate"] for s in _SAFARI_VERSIONS if s["impersonate"] != safari["impersonate"]]
+    others = [
+        s["impersonate"] for s in _SAFARI_VERSIONS if s["impersonate"] != safari["impersonate"]
+    ]
     return {
         "browser_type": "mac_safari",
         "impersonate": safari["impersonate"],
@@ -463,7 +467,9 @@ def _gen_mac_safari(r: random.Random) -> dict:
 def _gen_ios_safari(r: random.Random) -> dict:
     safari = r.choice(_IOS_SAFARI_VERSIONS)
     ios_ver = r.choice(safari["ios_versions"])
-    others = [s["impersonate"] for s in _IOS_SAFARI_VERSIONS if s["impersonate"] != safari["impersonate"]]
+    others = [
+        s["impersonate"] for s in _IOS_SAFARI_VERSIONS if s["impersonate"] != safari["impersonate"]
+    ]
     fallbacks = [safari["impersonate"]] + others
     return {
         "browser_type": "ios_safari",
@@ -483,22 +489,27 @@ def _gen_ios_safari(r: random.Random) -> dict:
 
 def _gen_chrome(r: random.Random) -> dict:
     chrome = r.choice(_CHROME_VERSIONS)
-    others = [c["impersonate"] for c in _CHROME_VERSIONS if c["impersonate"] != chrome["impersonate"]]
+    others = [
+        c["impersonate"] for c in _CHROME_VERSIONS if c["impersonate"] != chrome["impersonate"]
+    ]
     sec_ch_ua = (
         f'"Chromium";v="{chrome["ver"]}", '
         f'"Google Chrome";v="{chrome["ver"]}", '
-        f'{chrome["not_a_brand"]}'
+        f"{chrome['not_a_brand']}"
     )
     # Client Hints 全套：full-version-list 带完整版本号
     sec_ch_ua_full_version_list = (
         f'"Chromium";v="{chrome["full_ver"]}", '
         f'"Google Chrome";v="{chrome["full_ver"]}", '
-        f'{chrome["not_a_brand"]}'  # Not.A/Brand 保持主版本号
+        f"{chrome['not_a_brand']}"  # Not.A/Brand 保持主版本号
     )
     # Windows 10 的 NT 版本对应表：10.0.19041+ 对应不同 build
     # 常见 User-Visible 版本：21H2(19044)、22H2(19045)、Win11 21H2(22000)、22H2(22621)
     # 这里选择 Windows 10 22H2(19045) 和 Windows 11 23H2(22631) 的真实对应
-    win_platform_versions = ["10.0.19045", "15.0.0"]  # Win10 22H2 / Win11 (UA 里说 10.0 但 CH 可报 15)
+    win_platform_versions = [
+        "10.0.19045",
+        "15.0.0",
+    ]  # Win10 22H2 / Win11 (UA 里说 10.0 但 CH 可报 15)
     platform_version = r.choice(win_platform_versions)
 
     return {
@@ -603,7 +614,7 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
     primary_lang = lang_pool[0]  # 主语言固定第一位
     other_langs = lang_pool[1:]
     r.shuffle(other_langs)  # 其他语言随机打乱
-    selected = [primary_lang] + other_langs[:num_langs - 1]
+    selected = [primary_lang] + other_langs[: num_langs - 1]
 
     # 构建 Accept-Language header（带 q 值权重递减）
     # 真实浏览器格式：主语言无 q，第一个副语言 q=0.9，之后 0.8/0.7…

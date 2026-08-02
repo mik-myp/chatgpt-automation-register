@@ -104,9 +104,7 @@ def list_accounts(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AccountListResponse:
     registration = SettingsService(db).registration_internal()
-    fixed_password = (
-        registration.fixed_password if registration.password_mode == "fixed" else ""
-    )
+    fixed_password = registration.fixed_password if registration.password_mode == "fixed" else ""
     items, total = AccountRepository(db).list_page(
         status=account_status,
         security_filter=security_filter,
@@ -117,10 +115,7 @@ def list_accounts(
     )
     credentials = AccountRepository(db).credentials([item.email for item in items])
     return AccountListResponse(
-        items=[
-            _summary(item, credentials.get(item.email), fixed_password)
-            for item in items
-        ],
+        items=[_summary(item, credentials.get(item.email), fixed_password) for item in items],
         total=total,
         limit=limit,
         offset=offset,

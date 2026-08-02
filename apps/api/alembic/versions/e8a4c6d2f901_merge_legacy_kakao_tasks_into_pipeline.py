@@ -21,16 +21,20 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     connection = op.get_bind()
-    tasks = connection.execute(
-        sa.text(
-            """
+    tasks = (
+        connection.execute(
+            sa.text(
+                """
             SELECT id, email, card_id, card_code_snapshot, created_at, updated_at
             FROM kakao_tasks
             WHERE pipeline_run_id IS NULL
             ORDER BY created_at, id
             """
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     if not tasks:
         return
 

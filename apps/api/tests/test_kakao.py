@@ -8,11 +8,14 @@ from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
+    KakaoEmailClaim,
     KakaoTask,
     KakaoTaskStatus,
 )
+from gpt_auto_register.db.models.pipeline import PipelineItem, PipelineRun
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.kakao.client import KakaoClient
+from gpt_auto_register.modules.kakao.state import claim_extraction
 
 
 @pytest.fixture
@@ -101,3 +104,24 @@ def test_kakao_sync_marks_email_when_payment_link_is_generated(
     assert extraction["task_id"] == kakao_task.id
     assert extraction["upstream_job_id"] == kakao_task.upstream_job_id
     assert extraction["payment_url"] == "https://pay.example.com/generated"
+
+
+def test_kakao_email_claim_allows_only_one_pipeline_item(db_session: Session) -> None:
+    first_run = PipelineRun(target_count=1, config_snapshot={})
+    second_run = PipelineRun(target_count=1, config_snapshot={})
+    db_session.add_all([first_run, second_run])
+    db_session.flush()
+    first_item = PipelineItem(pipeline_run_id=first_run.id, position=0)
+    second_item = PipelineItem(pipeline_run_id=second_run.id, position=0)
+    db_session.add_all([first_item, second_item])
+    db_session.flush()
+
+    first = claim_extraction(db_session, "User@Example.com", first_run.id, first_item.id)
+    duplicate = claim_extraction(db_session, "user@example.com", second_run.id, second_item.id)
+    db_session.commit()
+
+    assert first is True
+    assert duplicate is False
+    claim = db_session.get(KakaoEmailClaim, "user@example.com")
+    assert claim is not None
+    assert claim.pipeline_item_id == first_item.id

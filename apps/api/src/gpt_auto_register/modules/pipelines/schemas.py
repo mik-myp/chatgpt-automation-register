@@ -93,8 +93,20 @@ class PipelineCardAllocationSummary(BaseModel):
 
 class PipelineRunDetail(PipelineRunSummary):
     config_snapshot: dict[str, object]
+
+
+class PipelineItemListResponse(BaseModel):
     items: list[PipelineItemSummary]
-    cards: list[PipelineCardAllocationSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class PipelineCardAllocationListResponse(BaseModel):
+    items: list[PipelineCardAllocationSummary]
+    total: int
+    limit: int
+    offset: int
 
 
 class BulkPipelineAction(StrEnum):
@@ -169,6 +181,7 @@ class CopySecurityCredentialsRequest(BaseModel):
 
 class PipelineEventSummary(BaseModel):
     id: int
+    cursor: int
     sequence: int
     level: str
     event_type: str
@@ -179,7 +192,7 @@ class PipelineEventSummary(BaseModel):
 
 class PipelineEventListResponse(BaseModel):
     items: list[PipelineEventSummary]
-    last_sequence: int
+    last_cursor: int
     terminal: bool
 
 
@@ -200,6 +213,8 @@ class PipelineDeliverySummary(BaseModel):
     mfa_status: str
     account_format: Literal["security_credentials", "mail_access", "unavailable"]
     account_missing_reason: str | None
+    payment_copyable: bool
+    account_copyable: bool
     deliverable: bool
     plus_state: str | None = None
     plus_label: str | None = None

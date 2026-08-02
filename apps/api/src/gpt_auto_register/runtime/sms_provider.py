@@ -10,8 +10,10 @@
 泰国（country_id=52）确认可用**。其它国家可能抽到 WhatsApp 号导致拿不到 SMS。
 SMS-Activate 协议平台的 `auto_select_country=True` 会按价格 + 库存自动选号。
 """
+
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,9 +21,9 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
 
 import requests
 
@@ -36,8 +38,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SmsActivation:
     """一次手机号租用的句柄。"""
+
     activation_id: str
-    phone_number: str          # E.164 格式，带 + 前缀
+    phone_number: str  # E.164 格式，带 + 前缀
     country: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -48,17 +51,15 @@ class BaseSmsProvider(ABC):
     auto_report_success_on_code = True  # True = 收到 code 即报成功；False = 等业务侧确认
 
     @abstractmethod
-    def get_number(self, *, service: str, country: str = "",
-                    country_candidates: Optional[list[str]] = None) -> SmsActivation:
-        ...
+    def get_number(
+        self, *, service: str, country: str = "", country_candidates: list[str] | None = None
+    ) -> SmsActivation: ...
 
     @abstractmethod
-    def get_code(self, activation_id: str, *, timeout: int = 180) -> str:
-        ...
+    def get_code(self, activation_id: str, *, timeout: int = 180) -> str: ...
 
     @abstractmethod
-    def cancel(self, activation_id: str) -> bool:
-        ...
+    def cancel(self, activation_id: str) -> bool: ...
 
     def get_balance(self) -> float:
         """查询余额（货币随平台）。"""
@@ -80,7 +81,7 @@ class BaseSmsProvider(ABC):
         """业务侧已成功触发短信发送（add-phone/send 200）。"""
         return None
 
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
+    def set_resend_callback(self, callback: Callable[[], None] | None) -> None:
         """注册 resend 钩子（SmsBower 长等待时回调业务侧重新触发 OTP）。"""
         return None
 
@@ -90,45 +91,198 @@ class BaseSmsProvider(ABC):
 # ---------------------------------------------------------------------------
 
 SMS_COUNTRY_NAMES_CN: dict[str, str] = {
-    "0": "俄罗斯", "1": "乌克兰", "2": "哈萨克斯坦", "3": "中国", "4": "菲律宾",
-    "5": "缅甸", "6": "印度尼西亚", "7": "马来西亚", "8": "肯尼亚", "9": "坦桑尼亚",
-    "10": "越南", "11": "吉尔吉斯斯坦", "12": "美国(虚拟)", "13": "以色列", "14": "香港",
-    "15": "波兰", "16": "英国", "17": "马达加斯加", "18": "刚果(布)", "19": "尼日利亚",
-    "20": "澳门", "21": "埃及", "22": "印度", "23": "爱尔兰", "24": "柬埔寨",
-    "25": "老挝", "26": "海地", "27": "科特迪瓦", "28": "冈比亚", "29": "塞尔维亚",
-    "30": "也门", "31": "南非", "32": "罗马尼亚", "33": "哥伦比亚", "34": "爱沙尼亚",
-    "35": "阿塞拜疆", "36": "加拿大", "37": "摩洛哥", "38": "加纳", "39": "阿根廷",
-    "40": "乌兹别克斯坦", "41": "喀麦隆", "42": "乍得", "43": "德国", "44": "立陶宛",
-    "45": "克罗地亚", "46": "瑞典", "47": "伊拉克", "48": "荷兰", "49": "拉脱维亚",
-    "50": "奥地利", "51": "白俄罗斯", "52": "泰国", "53": "沙特阿拉伯", "54": "墨西哥",
-    "55": "台湾", "56": "西班牙", "57": "伊朗", "58": "阿尔及利亚", "59": "斯洛文尼亚",
-    "60": "孟加拉国", "61": "塞内加尔", "62": "土耳其", "63": "捷克", "64": "斯里兰卡",
-    "65": "秘鲁", "66": "巴基斯坦", "67": "新西兰", "68": "几内亚", "69": "马里",
-    "70": "委内瑞拉", "71": "埃塞俄比亚", "72": "蒙古", "73": "巴西", "74": "阿富汗",
-    "75": "乌干达", "76": "安哥拉", "77": "塞浦路斯", "78": "法国", "79": "巴布亚新几内亚",
-    "80": "莫桑比克", "81": "尼泊尔", "82": "比利时", "83": "保加利亚", "84": "匈牙利",
-    "85": "摩尔多瓦", "86": "意大利", "87": "巴拉圭", "88": "洪都拉斯", "89": "突尼斯",
-    "90": "尼加拉瓜", "91": "东帝汶", "92": "玻利维亚", "93": "哥斯达黎加", "94": "危地马拉",
-    "95": "阿联酋", "96": "津巴布韦", "97": "波多黎各", "98": "苏丹", "99": "多哥",
-    "100": "科威特", "101": "萨尔瓦多", "102": "利比亚", "103": "牙买加", "104": "特立尼达和多巴哥",
-    "105": "厄瓜多尔", "106": "斯威士兰", "107": "阿曼", "108": "波黑", "109": "多米尼加",
-    "110": "叙利亚", "111": "卡塔尔", "112": "巴拿马", "113": "古巴", "114": "毛里塔尼亚",
-    "115": "塞拉利昂", "116": "约旦", "117": "葡萄牙", "118": "巴巴多斯", "119": "布隆迪",
-    "120": "贝宁", "121": "文莱", "122": "巴哈马", "123": "博茨瓦纳", "124": "伯利兹",
-    "125": "中非", "126": "多米尼克", "127": "格林纳达", "128": "格鲁吉亚", "129": "希腊",
-    "130": "几内亚比绍", "131": "圭亚那", "132": "冰岛", "133": "科摩罗", "134": "利比里亚",
-    "135": "莱索托", "136": "马拉维", "137": "纳米比亚", "138": "尼日尔", "139": "卢旺达",
-    "140": "斯洛伐克", "141": "苏里南", "142": "塔吉克斯坦", "143": "摩纳哥", "144": "巴林",
-    "145": "留尼汪岛", "146": "赞比亚", "147": "亚美尼亚", "148": "索马里", "149": "刚果(金)",
-    "150": "智利", "151": "布基纳法索", "152": "黎巴嫩", "153": "加蓬", "154": "阿尔巴尼亚",
-    "155": "乌拉圭", "156": "毛里求斯", "157": "不丹", "158": "马尔代夫", "159": "瓜德罗普岛",
-    "160": "土库曼斯坦", "161": "法属圭亚那", "162": "芬兰", "163": "圣卢西亚", "164": "卢森堡",
-    "165": "圣文森特", "166": "赤道几内亚", "167": "吉布提", "168": "安提瓜和巴布达", "169": "开曼群岛",
-    "170": "黑山", "171": "丹麦", "172": "瑞士", "173": "挪威", "174": "澳大利亚",
-    "175": "厄立特里亚", "176": "南苏丹", "177": "圣多美", "178": "阿鲁巴岛", "179": "蒙特塞拉特",
-    "180": "安圭拉岛", "181": "北马其顿", "182": "塞舌尔", "183": "新喀里多尼亚", "184": "佛得角",
-    "185": "美国(实体)", "186": "巴勒斯坦", "187": "美国", "188": "中国", "189": "韩国",
-    "190": "科特迪瓦", "191": "日本",
+    "0": "俄罗斯",
+    "1": "乌克兰",
+    "2": "哈萨克斯坦",
+    "3": "中国",
+    "4": "菲律宾",
+    "5": "缅甸",
+    "6": "印度尼西亚",
+    "7": "马来西亚",
+    "8": "肯尼亚",
+    "9": "坦桑尼亚",
+    "10": "越南",
+    "11": "吉尔吉斯斯坦",
+    "12": "美国(虚拟)",
+    "13": "以色列",
+    "14": "香港",
+    "15": "波兰",
+    "16": "英国",
+    "17": "马达加斯加",
+    "18": "刚果(布)",
+    "19": "尼日利亚",
+    "20": "澳门",
+    "21": "埃及",
+    "22": "印度",
+    "23": "爱尔兰",
+    "24": "柬埔寨",
+    "25": "老挝",
+    "26": "海地",
+    "27": "科特迪瓦",
+    "28": "冈比亚",
+    "29": "塞尔维亚",
+    "30": "也门",
+    "31": "南非",
+    "32": "罗马尼亚",
+    "33": "哥伦比亚",
+    "34": "爱沙尼亚",
+    "35": "阿塞拜疆",
+    "36": "加拿大",
+    "37": "摩洛哥",
+    "38": "加纳",
+    "39": "阿根廷",
+    "40": "乌兹别克斯坦",
+    "41": "喀麦隆",
+    "42": "乍得",
+    "43": "德国",
+    "44": "立陶宛",
+    "45": "克罗地亚",
+    "46": "瑞典",
+    "47": "伊拉克",
+    "48": "荷兰",
+    "49": "拉脱维亚",
+    "50": "奥地利",
+    "51": "白俄罗斯",
+    "52": "泰国",
+    "53": "沙特阿拉伯",
+    "54": "墨西哥",
+    "55": "台湾",
+    "56": "西班牙",
+    "57": "伊朗",
+    "58": "阿尔及利亚",
+    "59": "斯洛文尼亚",
+    "60": "孟加拉国",
+    "61": "塞内加尔",
+    "62": "土耳其",
+    "63": "捷克",
+    "64": "斯里兰卡",
+    "65": "秘鲁",
+    "66": "巴基斯坦",
+    "67": "新西兰",
+    "68": "几内亚",
+    "69": "马里",
+    "70": "委内瑞拉",
+    "71": "埃塞俄比亚",
+    "72": "蒙古",
+    "73": "巴西",
+    "74": "阿富汗",
+    "75": "乌干达",
+    "76": "安哥拉",
+    "77": "塞浦路斯",
+    "78": "法国",
+    "79": "巴布亚新几内亚",
+    "80": "莫桑比克",
+    "81": "尼泊尔",
+    "82": "比利时",
+    "83": "保加利亚",
+    "84": "匈牙利",
+    "85": "摩尔多瓦",
+    "86": "意大利",
+    "87": "巴拉圭",
+    "88": "洪都拉斯",
+    "89": "突尼斯",
+    "90": "尼加拉瓜",
+    "91": "东帝汶",
+    "92": "玻利维亚",
+    "93": "哥斯达黎加",
+    "94": "危地马拉",
+    "95": "阿联酋",
+    "96": "津巴布韦",
+    "97": "波多黎各",
+    "98": "苏丹",
+    "99": "多哥",
+    "100": "科威特",
+    "101": "萨尔瓦多",
+    "102": "利比亚",
+    "103": "牙买加",
+    "104": "特立尼达和多巴哥",
+    "105": "厄瓜多尔",
+    "106": "斯威士兰",
+    "107": "阿曼",
+    "108": "波黑",
+    "109": "多米尼加",
+    "110": "叙利亚",
+    "111": "卡塔尔",
+    "112": "巴拿马",
+    "113": "古巴",
+    "114": "毛里塔尼亚",
+    "115": "塞拉利昂",
+    "116": "约旦",
+    "117": "葡萄牙",
+    "118": "巴巴多斯",
+    "119": "布隆迪",
+    "120": "贝宁",
+    "121": "文莱",
+    "122": "巴哈马",
+    "123": "博茨瓦纳",
+    "124": "伯利兹",
+    "125": "中非",
+    "126": "多米尼克",
+    "127": "格林纳达",
+    "128": "格鲁吉亚",
+    "129": "希腊",
+    "130": "几内亚比绍",
+    "131": "圭亚那",
+    "132": "冰岛",
+    "133": "科摩罗",
+    "134": "利比里亚",
+    "135": "莱索托",
+    "136": "马拉维",
+    "137": "纳米比亚",
+    "138": "尼日尔",
+    "139": "卢旺达",
+    "140": "斯洛伐克",
+    "141": "苏里南",
+    "142": "塔吉克斯坦",
+    "143": "摩纳哥",
+    "144": "巴林",
+    "145": "留尼汪岛",
+    "146": "赞比亚",
+    "147": "亚美尼亚",
+    "148": "索马里",
+    "149": "刚果(金)",
+    "150": "智利",
+    "151": "布基纳法索",
+    "152": "黎巴嫩",
+    "153": "加蓬",
+    "154": "阿尔巴尼亚",
+    "155": "乌拉圭",
+    "156": "毛里求斯",
+    "157": "不丹",
+    "158": "马尔代夫",
+    "159": "瓜德罗普岛",
+    "160": "土库曼斯坦",
+    "161": "法属圭亚那",
+    "162": "芬兰",
+    "163": "圣卢西亚",
+    "164": "卢森堡",
+    "165": "圣文森特",
+    "166": "赤道几内亚",
+    "167": "吉布提",
+    "168": "安提瓜和巴布达",
+    "169": "开曼群岛",
+    "170": "黑山",
+    "171": "丹麦",
+    "172": "瑞士",
+    "173": "挪威",
+    "174": "澳大利亚",
+    "175": "厄立特里亚",
+    "176": "南苏丹",
+    "177": "圣多美",
+    "178": "阿鲁巴岛",
+    "179": "蒙特塞拉特",
+    "180": "安圭拉岛",
+    "181": "北马其顿",
+    "182": "塞舌尔",
+    "183": "新喀里多尼亚",
+    "184": "佛得角",
+    "185": "美国(实体)",
+    "186": "巴勒斯坦",
+    "187": "美国",
+    "188": "中国",
+    "189": "韩国",
+    "190": "科特迪瓦",
+    "191": "日本",
 }
 
 
@@ -148,7 +302,7 @@ SMS_DEFAULT_COUNTRY = "52"  # Thailand —— OpenAI 走 SMS 的稳定国家
 SMS_PHONE_LIFETIME = 20 * 60  # 号码租用窗口（秒）
 _SMS_CACHE_LOCK = threading.Lock()
 _SMS_VERIFY_LOCK = threading.RLock()
-_SMS_CACHE: Optional[dict] = None  # 跨线程共享的号码复用缓存
+_SMS_CACHE: dict | None = None  # 跨线程共享的号码复用缓存
 
 # OpenAI 走纯 SMS 的国家白名单（截至 2025-2026 实测；其它国家会抽到 WhatsApp 号）
 OPENAI_SMS_COUNTRIES = {"52"}  # Thailand only
@@ -182,7 +336,9 @@ def _safe_bool(value, default: bool) -> bool:
 
 def _project_cache_dir() -> Path:
     configured = str(os.environ.get("GPT_AUTO_RUNTIME_DATA_PATH") or "").strip()
-    cache = Path(configured).expanduser() if configured else Path(__file__).resolve().parent / "data"
+    cache = (
+        Path(configured).expanduser() if configured else Path(__file__).resolve().parent / "data"
+    )
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 
@@ -206,7 +362,7 @@ def _parse_sms_status_text(text: str) -> dict:
     return {"status": "unknown", "raw": text}
 
 
-def _make_sms_candidate(activation_id: str, source: str, code) -> Optional[dict]:
+def _make_sms_candidate(activation_id: str, source: str, code) -> dict | None:
     code = str(code or "").strip()
     if not code or code in {"null", "None"}:
         return None
@@ -214,9 +370,7 @@ def _make_sms_candidate(activation_id: str, source: str, code) -> Optional[dict]
         "status": "ok",
         "code": code,
         "source": source,
-        "sms_key": hashlib.sha256(
-            f"{activation_id}:{code}".encode("utf-8")
-        ).hexdigest(),
+        "sms_key": hashlib.sha256(f"{activation_id}:{code}".encode()).hexdigest(),
     }
 
 
@@ -234,7 +388,7 @@ class SmsBowerProvider(BaseSmsProvider):
         default_service: str = SMS_DEFAULT_SERVICE,
         default_country: str = SMS_DEFAULT_COUNTRY,
         max_price: float = -1,
-        proxy: Optional[str] = None,
+        proxy: str | None = None,
         reuse_phone_to_max: bool = True,
         phone_success_max: int = 3,
         provider_name: str = "SmsBower",
@@ -249,13 +403,15 @@ class SmsBowerProvider(BaseSmsProvider):
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
         self.phone_success_max = max(0, int(phone_success_max or 0))
         self.provider_name = str(provider_name or "SmsBower").strip()
-        self._resend_callback: Optional[Callable[[], None]] = None
-        self.last_code_result: Optional[dict] = None
-        self.current_activation: Optional[SmsActivation] = None
+        self._resend_callback: Callable[[], None] | None = None
+        self.last_code_result: dict | None = None
+        self.current_activation: SmsActivation | None = None
 
     # ---- HTTP ----
 
-    def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
+    def _request(
+        self, params: dict, *, needs_key: bool = True, timeout: int = 30
+    ) -> requests.Response:
         payload = dict(params)
         if needs_key:
             payload["api_key"] = self.api_key
@@ -271,7 +427,7 @@ class SmsBowerProvider(BaseSmsProvider):
             return float(text.split(":", 1)[1])
         raise RuntimeError(f"{self.provider_name} getBalance 失败: {text}")
 
-    def get_prices(self, service: Optional[str] = None, country=None) -> dict:
+    def get_prices(self, service: str | None = None, country=None) -> dict:
         params = {"action": "getPrices"}
         if service:
             params["service"] = service
@@ -282,7 +438,7 @@ class SmsBowerProvider(BaseSmsProvider):
             return data
         raise RuntimeError(f"{self.provider_name} getPrices 返回结构异常")
 
-    def get_top_countries(self, service: Optional[str] = None) -> list[dict]:
+    def get_top_countries(self, service: str | None = None) -> list[dict]:
         """按价格 + 库存排序返回国家列表。"""
         service_code = str(service or self.default_service or SMS_DEFAULT_SERVICE).strip()
         # 策略1：使用专用排名 API
@@ -352,7 +508,12 @@ class SmsBowerProvider(BaseSmsProvider):
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                country_id = item.get("country") or item.get("countryId") or item.get("country_id") or item.get("id")
+                country_id = (
+                    item.get("country")
+                    or item.get("countryId")
+                    or item.get("country_id")
+                    or item.get("id")
+                )
                 if country_id is None:
                     continue
                 price = item.get("price") or item.get("cost")
@@ -369,10 +530,15 @@ class SmsBowerProvider(BaseSmsProvider):
                     rows.append({"country": str(country_id), "price": price, "count": count})
         return rows
 
-    def get_best_country(self, service: Optional[str] = None, *,
-                         min_stock: int = 20, max_price: float = 0,
-                         strict_whitelist: bool = False,
-                         allowed_countries: Optional[list[str]] = None) -> Optional[str]:
+    def get_best_country(
+        self,
+        service: str | None = None,
+        *,
+        min_stock: int = 20,
+        max_price: float = 0,
+        strict_whitelist: bool = False,
+        allowed_countries: list[str] | None = None,
+    ) -> str | None:
         """自动选最优国家。
 
         allowed_countries 优先级最高（用户自定义 = 从这些国家里挑最便宜+库存足的）
@@ -387,11 +553,11 @@ class SmsBowerProvider(BaseSmsProvider):
         if not rows:
             return None
 
-        allowed_set: Optional[set[str]] = None
+        allowed_set: set[str] | None = None
         if allowed_countries:
             allowed_set = {str(c).strip() for c in allowed_countries if str(c).strip()}
 
-        def _pick(stock_threshold: int) -> Optional[str]:
+        def _pick(stock_threshold: int) -> str | None:
             for row in rows:
                 cid = str(row.get("country") or "")
                 # 优先用 user-supplied 白名单
@@ -411,7 +577,9 @@ class SmsBowerProvider(BaseSmsProvider):
                     logger.warning(
                         "%s 自动选了非 OpenAI-SMS 白名单国家 country=%s price=%s "
                         "（OpenAI 可能让此号用 WhatsApp 验证 → 收不到 SMS）",
-                        self.provider_name, cid, price,
+                        self.provider_name,
+                        cid,
+                        price,
                     )
                 return cid
             return None
@@ -428,7 +596,7 @@ class SmsBowerProvider(BaseSmsProvider):
             "country": str(country),
         }
 
-    def _load_cache(self, service: str, country: str) -> Optional[dict]:
+    def _load_cache(self, service: str, country: str) -> dict | None:
         global _SMS_CACHE
         cache = _SMS_CACHE
         if cache is None:
@@ -446,7 +614,10 @@ class SmsBowerProvider(BaseSmsProvider):
         if elapsed >= SMS_PHONE_LIFETIME or cache.get("reuse_stopped"):
             self._clear_cache()
             return None
-        if self.phone_success_max > 0 and int(cache.get("use_count") or 0) >= self.phone_success_max:
+        if (
+            self.phone_success_max > 0
+            and int(cache.get("use_count") or 0) >= self.phone_success_max
+        ):
             cache["reuse_stopped"] = True
             cache["stop_reason"] = f"success max reached ({self.phone_success_max})"
             self._save_cache(cache)
@@ -455,15 +626,13 @@ class SmsBowerProvider(BaseSmsProvider):
         _SMS_CACHE = cache
         return cache
 
-    def _save_cache(self, cache: Optional[dict]) -> None:
+    def _save_cache(self, cache: dict | None) -> None:
         global _SMS_CACHE
         _SMS_CACHE = cache
         path = _smsbower_cache_file()
         if cache is None:
-            try:
+            with contextlib.suppress(Exception):
                 path.unlink(missing_ok=True)
-            except Exception:
-                pass
             return
         serializable = dict(cache)
         serializable["used_codes"] = sorted(serializable.get("used_codes") or [])
@@ -483,14 +652,25 @@ class SmsBowerProvider(BaseSmsProvider):
         # 用户配了 max_price 才传，空 / <=0 时根本不传（让平台用默认）
         if self.max_price > 0:
             common["maxPrice"] = self.max_price
-        logger.info("%s %s: service=%s country=%s maxPrice=%s",
-                    self.provider_name, action, service, country, common.get("maxPrice", "未设置"))
+        logger.info(
+            "%s %s: service=%s country=%s maxPrice=%s",
+            self.provider_name,
+            action,
+            service,
+            country,
+            common.get("maxPrice", "未设置"),
+        )
 
         try:
             resp = self._request(common)
             resp_text = resp.text.strip()
-            logger.info("%s %s resp: status=%s text=%s",
-                        self.provider_name, action, resp.status_code, resp_text[:500])
+            logger.info(
+                "%s %s resp: status=%s text=%s",
+                self.provider_name,
+                action,
+                resp.status_code,
+                resp_text[:500],
+            )
 
             # V2 返回 JSON
             if action == "getNumberV2":
@@ -512,7 +692,7 @@ class SmsBowerProvider(BaseSmsProvider):
                         "countryPhoneCode": "",
                     }
             raise RuntimeError(resp_text[:200] or "empty response")
-        except Exception as e:
+        except Exception:
             # 不在这里 fallback，让调用方的 for action 循环去试下个 action
             raise
 
@@ -528,8 +708,9 @@ class SmsBowerProvider(BaseSmsProvider):
             return f"+{cc}{raw}"
         return f"+{raw}"
 
-    def get_number(self, *, service: str, country: str = "",
-                    country_candidates: Optional[list[str]] = None) -> SmsActivation:
+    def get_number(
+        self, *, service: str, country: str = "", country_candidates: list[str] | None = None
+    ) -> SmsActivation:
         """租号。支持多国家候选依次尝试（按入参顺序）。
 
         country_candidates: 候选国家 ID 列表，按这个顺序依次尝试；空时只用 country 单个。
@@ -540,12 +721,19 @@ class SmsBowerProvider(BaseSmsProvider):
         service_code = str(self.default_service or service or SMS_DEFAULT_SERVICE).strip()
         # 单一 country 兜底
         if not country_candidates:
-            country_candidates = [str(country or self.default_country or SMS_DEFAULT_COUNTRY).strip()]
+            country_candidates = [
+                str(country or self.default_country or SMS_DEFAULT_COUNTRY).strip()
+            ]
 
-        with _SMS_VERIFY_LOCK:
+        # 固定验证锁 -> 缓存锁的获取顺序，避免并发租号时交叉持锁。
+        with _SMS_VERIFY_LOCK:  # noqa: SIM117
             with _SMS_CACHE_LOCK:
                 # 复用 cache（仅当用户许可且 cache 国家在候选列表里）
-                cache = self._load_cache(service_code, country_candidates[0]) if self.reuse_phone_to_max else None
+                cache = (
+                    self._load_cache(service_code, country_candidates[0])
+                    if self.reuse_phone_to_max
+                    else None
+                )
                 if cache and str(cache.get("country") or "") in country_candidates:
                     activation = SmsActivation(
                         activation_id=str(cache["activation_id"]),
@@ -558,7 +746,7 @@ class SmsBowerProvider(BaseSmsProvider):
 
                 # 双重 for：外层国家 × 内层 action（V2 / V1）
                 failures: list[str] = []
-                last_exc: Optional[Exception] = None
+                last_exc: Exception | None = None
                 for cid in country_candidates:
                     cid = str(cid).strip()
                     if not cid:
@@ -592,8 +780,13 @@ class SmsBowerProvider(BaseSmsProvider):
                             )
                             self.current_activation = activation
                             if len(country_candidates) > 1:
-                                logger.info("%s 在国家 %s 租到号 %s (action=%s)",
-                                            self.provider_name, cid, phone, action)
+                                logger.info(
+                                    "%s 在国家 %s 租到号 %s (action=%s)",
+                                    self.provider_name,
+                                    cid,
+                                    phone,
+                                    action,
+                                )
                             return activation
                         except Exception as e:
                             msg = str(e)[:120]
@@ -603,7 +796,8 @@ class SmsBowerProvider(BaseSmsProvider):
 
                 detail = " | ".join(failures) if failures else "未知"
                 raise RuntimeError(
-                    f"{self.provider_name} 依次尝试 {len(country_candidates)} 个候选国家全失败: {detail}"
+                    f"{self.provider_name} 依次尝试 {len(country_candidates)} "
+                    f"个候选国家全失败: {detail}"
                 ) from last_exc
 
     # ---- 等 code / 状态查询 ----
@@ -631,7 +825,9 @@ class SmsBowerProvider(BaseSmsProvider):
         for channel in ("sms", "call"):
             item = data.get(channel)
             if isinstance(item, dict):
-                candidate = _make_sms_candidate(activation_id, f"getStatusV2.{channel}", item.get("code"))
+                candidate = _make_sms_candidate(
+                    activation_id, f"getStatusV2.{channel}", item.get("code")
+                )
                 if candidate:
                     return candidate
         return {"status": "wait_code"}
@@ -643,9 +839,15 @@ class SmsBowerProvider(BaseSmsProvider):
         except Exception:
             return False
 
-    def wait_for_code(self, activation_id: str, *, timeout: int = 80, poll: int = 3,
-                       openai_resend_interval: int = 20,
-                       openai_resend_max: int = 3) -> Optional[dict]:
+    def wait_for_code(
+        self,
+        activation_id: str,
+        *,
+        timeout: int = 80,
+        poll: int = 3,
+        openai_resend_interval: int = 20,
+        openai_resend_max: int = 3,
+    ) -> dict | None:
         """等 SMS 验证码：每 `openai_resend_interval` 秒触发一次 OpenAI 端 resend，
         最多 `openai_resend_max` 次。超过 timeout 仍没收到 → 返回 None（由上层 cancel 换号）。
         """
@@ -669,8 +871,11 @@ class SmsBowerProvider(BaseSmsProvider):
                     if result.get("status") == "ok":
                         code = str(result.get("code") or "")
                         if code and code not in used_codes:
-                            return {"status": "ok", "code": code,
-                                    "sms_key": result.get("sms_key") or ""}
+                            return {
+                                "status": "ok",
+                                "code": code,
+                                "sms_key": result.get("sms_key") or "",
+                            }
                 except Exception as e:
                     logger.debug("%s status %s 失败: %s", self.provider_name, src, e)
 
@@ -683,7 +888,10 @@ class SmsBowerProvider(BaseSmsProvider):
                     openai_resend_count = expected_resend_count
                     logger.info(
                         "%s: 已请求 OpenAI 端 resend (第 %d/%d 次, elapsed=%ds)",
-                        self.provider_name, openai_resend_count, openai_resend_max, int(elapsed),
+                        self.provider_name,
+                        openai_resend_count,
+                        openai_resend_max,
+                        int(elapsed),
                     )
                 except Exception as e:
                     logger.warning("OpenAI resend callback 失败: %s", e)
@@ -737,12 +945,16 @@ class SmsBowerProvider(BaseSmsProvider):
                     used = set(cache.get("used_codes") or [])
                     used.add(self.last_code_result["code"])
                     cache["used_codes"] = used
-                remaining = SMS_PHONE_LIFETIME - (time.time() - float(cache.get("acquired_at") or 0))
+                remaining = SMS_PHONE_LIFETIME - (
+                    time.time() - float(cache.get("acquired_at") or 0)
+                )
                 if not self.reuse_phone_to_max:
                     should_finish = True
                     should_clear = True
                     cache["reuse_stopped"] = True
-                elif self.phone_success_max > 0 and int(cache["use_count"]) >= self.phone_success_max:
+                elif (
+                    self.phone_success_max > 0 and int(cache["use_count"]) >= self.phone_success_max
+                ):
                     should_finish = True
                     cache["reuse_stopped"] = True
                 elif remaining <= 30:
@@ -756,9 +968,8 @@ class SmsBowerProvider(BaseSmsProvider):
             try:
                 resp = self._request({"action": "finishActivation", "id": activation_id})
                 if (
-                    (resp.status_code in (200, 204) or "ACCESS" in resp.text)
-                    and "BAD_ACTION" not in resp.text
-                ):
+                    resp.status_code in (200, 204) or "ACCESS" in resp.text
+                ) and "BAD_ACTION" not in resp.text:
                     return True
             except Exception:
                 pass
@@ -779,17 +990,13 @@ class SmsBowerProvider(BaseSmsProvider):
                     cache["used_codes"] = used
                 self._save_cache(cache)
         if self._resend_callback:
-            try:
+            with contextlib.suppress(Exception):
                 self._resend_callback()
-            except Exception:
-                pass
         self.request_resend_sms(activation_id)
 
     def mark_send_succeeded(self, activation_id: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._request({"action": "setStatus", "id": activation_id, "status": 1})
-        except Exception:
-            pass
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         # 业务侧拒了这个号 → cancel 退款（号根本没用上，不能让主人白花钱）
@@ -801,9 +1008,13 @@ class SmsBowerProvider(BaseSmsProvider):
             pass
         # 简化原因显示：只保留前 80 字符
         short_reason = (reason or "未知原因")[:80]
-        logger.info("%s 号 activation_id=%s cancel 退款 %s (原因: %s)",
-                    self.provider_name, activation_id,
-                    "✅" if cancel_ok else "❌", short_reason)
+        logger.info(
+            "%s 号 activation_id=%s cancel 退款 %s (原因: %s)",
+            self.provider_name,
+            activation_id,
+            "✅" if cancel_ok else "❌",
+            short_reason,
+        )
         # 同时清掉复用缓存（避免下次注册又拿到这个被拒的号）
         with _SMS_CACHE_LOCK:
             cache = _SMS_CACHE
@@ -813,9 +1024,8 @@ class SmsBowerProvider(BaseSmsProvider):
                 self._save_cache(cache)
                 self._clear_cache()
 
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
+    def set_resend_callback(self, callback: Callable[[], None] | None) -> None:
         self._resend_callback = callback
-
 
 
 # ---------------------------------------------------------------------------
@@ -844,33 +1054,39 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     succ_max = max(0, _safe_int(config.get("sms_phone_success_max"), 3))
 
     if pk in ("smsbower", "sms_bower"):
-        return SmsBowerProvider(api_key=api_key,
-                                default_service=service,
-                                default_country=country or SMS_DEFAULT_COUNTRY,
-                                max_price=max_price,
-                                proxy=proxy,
-                                reuse_phone_to_max=reuse,
-                                phone_success_max=succ_max)
+        return SmsBowerProvider(
+            api_key=api_key,
+            default_service=service,
+            default_country=country or SMS_DEFAULT_COUNTRY,
+            max_price=max_price,
+            proxy=proxy,
+            reuse_phone_to_max=reuse,
+            phone_success_max=succ_max,
+        )
     if pk in ("herosms", "hero_sms"):
-        return SmsBowerProvider(api_key=api_key,
-                                base_url="https://hero-sms.com/stubs/handler_api.php",
-                                default_service=service,
-                                default_country=country or SMS_DEFAULT_COUNTRY,
-                                max_price=max_price,
-                                proxy=proxy,
-                                reuse_phone_to_max=reuse,
-                                phone_success_max=succ_max,
-                                provider_name="HeroSMS")
+        return SmsBowerProvider(
+            api_key=api_key,
+            base_url="https://hero-sms.com/stubs/handler_api.php",
+            default_service=service,
+            default_country=country or SMS_DEFAULT_COUNTRY,
+            max_price=max_price,
+            proxy=proxy,
+            reuse_phone_to_max=reuse,
+            phone_success_max=succ_max,
+            provider_name="HeroSMS",
+        )
     if pk in ("grizzlysms", "grizzly_sms", "grizzly"):
-        return SmsBowerProvider(api_key=api_key,
-                                base_url="https://api.grizzlysms.com/stubs/handler_api.php",
-                                default_service=service,
-                                default_country=country or SMS_DEFAULT_COUNTRY,
-                                max_price=max_price,
-                                proxy=proxy,
-                                reuse_phone_to_max=reuse,
-                                phone_success_max=succ_max,
-                                provider_name="GrizzlySMS")
+        return SmsBowerProvider(
+            api_key=api_key,
+            base_url="https://api.grizzlysms.com/stubs/handler_api.php",
+            default_service=service,
+            default_country=country or SMS_DEFAULT_COUNTRY,
+            max_price=max_price,
+            proxy=proxy,
+            reuse_phone_to_max=reuse,
+            phone_success_max=succ_max,
+            provider_name="GrizzlySMS",
+        )
     raise RuntimeError(f"未知接码服务: {provider_key}")
 
 
@@ -895,7 +1111,7 @@ class PhoneCallbackController:
         *,
         service: str = "openai",
         country: str = "",
-        log_fn: Optional[Callable[[str], None]] = None,
+        log_fn: Callable[[str], None] | None = None,
         auto_select_country: bool = False,
     ):
         self.provider_key = provider_key
@@ -904,8 +1120,8 @@ class PhoneCallbackController:
         self.country = country
         self.log = log_fn or logger.info
         self.auto_select_country = bool(auto_select_country)
-        self.provider: Optional[BaseSmsProvider] = None
-        self.activation: Optional[SmsActivation] = None
+        self.provider: BaseSmsProvider | None = None
+        self.activation: SmsActivation | None = None
         self.completed = False
         self._verify_lock_acquired = False
 
@@ -926,12 +1142,13 @@ class PhoneCallbackController:
         allowed_raw = str(self.config.get("sms_allowed_countries") or "").strip()
         allowed_list = [c.strip() for c in allowed_raw.replace(";", ",").split(",") if c.strip()]
 
-        effective_country = self.country
         country_candidates: list[str] = []
 
         if self.auto_select_country and isinstance(provider, SmsBowerProvider):
             if allowed_list:
-                self.log(f"🔍 自动选号: 从主人勾选的 {len(allowed_list)} 个国家依次尝试（按价格升序）")
+                self.log(
+                    f"🔍 自动选号: 从主人勾选的 {len(allowed_list)} 个国家依次尝试（按价格升序）"
+                )
                 try:
                     rows = provider.get_top_countries(service=self.service)
                     # 按价格升序排，只保留在 allowed_list 中的
@@ -976,22 +1193,28 @@ class PhoneCallbackController:
         country_label_log = ",".join(
             f"{c}({SMS_COUNTRY_NAMES_CN.get(c, '?')})" for c in country_candidates[:5]
         )
-        self.log(f"📱 准备租号: provider={self.provider_key} service={self.service} 候选={country_label_log}{' ...' if len(country_candidates) > 5 else ''}")
+        self.log(
+            f"📱 准备租号: provider={self.provider_key} service={self.service} "
+            f"候选={country_label_log}"
+            f"{' ...' if len(country_candidates) > 5 else ''}"
+        )
         try:
             self.activation = provider.get_number(
                 service=self.service,
                 country=country_candidates[0],
                 country_candidates=country_candidates,
             )
-        except Exception as exc:
+        except Exception:
             self._release_lock()
             raise
 
         reused = bool((self.activation.metadata or {}).get("reused"))
         used_country = self.activation.country or country_candidates[0]
         used_country_label = f"{used_country} {SMS_COUNTRY_NAMES_CN.get(used_country, '')}"
-        self.log(f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
-                 f"国家={used_country_label} (activation_id={self.activation.activation_id})")
+        self.log(
+            f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
+            f"国家={used_country_label} (activation_id={self.activation.activation_id})"
+        )
         return self.activation.phone_number
 
     def get_code(self, timeout: int = 180) -> str:
@@ -999,7 +1222,10 @@ class PhoneCallbackController:
         if not self.activation:
             raise RuntimeError("PhoneCallbackController: 未先 get_phone")
         provider = self._provider()
-        self.log(f"⏳ 等待 SMS 验证码... (activation_id={self.activation.activation_id} timeout={timeout}s)")
+        self.log(
+            "⏳ 等待 SMS 验证码... "
+            f"(activation_id={self.activation.activation_id} timeout={timeout}s)"
+        )
         code = provider.get_code(self.activation.activation_id, timeout=timeout)
         if code:
             self.log("收到 SMS 验证码")
@@ -1021,30 +1247,22 @@ class PhoneCallbackController:
 
     def mark_code_failed(self, reason: str = "") -> None:
         if self.activation and self.provider:
-            try:
+            with contextlib.suppress(Exception):
                 self.provider.mark_code_failed(self.activation.activation_id, reason=reason)
-            except Exception:
-                pass
 
     def mark_send_succeeded(self) -> None:
         if self.activation and self.provider:
-            try:
+            with contextlib.suppress(Exception):
                 self.provider.mark_send_succeeded(self.activation.activation_id)
-            except Exception:
-                pass
 
     def mark_send_failed(self, reason: str = "") -> None:
         if self.activation and self.provider:
-            try:
+            with contextlib.suppress(Exception):
                 self.provider.mark_send_failed(self.activation.activation_id, reason=reason)
-            except Exception:
-                pass
 
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        try:
+    def set_resend_callback(self, callback: Callable[[], None] | None) -> None:
+        with contextlib.suppress(Exception):
             self._provider().set_resend_callback(callback)
-        except Exception:
-            pass
 
     def cleanup(self) -> None:
         """流程结束（成功或失败）调用：释放未完成的号、解锁。"""
@@ -1058,10 +1276,8 @@ class PhoneCallbackController:
 
     def _release_lock(self) -> None:
         if self._verify_lock_acquired:
-            try:
+            with contextlib.suppress(RuntimeError):
                 _SMS_VERIFY_LOCK.release()
-            except RuntimeError:
-                pass
             self._verify_lock_acquired = False
 
 
@@ -1071,6 +1287,7 @@ class PhoneCallbackController:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) < 3:
         print("用法: python sms_provider.py <provider_key> <api_key> [country]")
         sys.exit(1)

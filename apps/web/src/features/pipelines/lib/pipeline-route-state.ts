@@ -14,6 +14,7 @@ export function readPage(searchParams: URLSearchParams, key = "page") {
 
 export function pipelineListState(searchParams: URLSearchParams): {
   status: PipelineStatusType | "all"
+  search: string
   page: number
   params: ListPipelineRunsApiPipelinesRunsGetParams
 } {
@@ -24,11 +25,14 @@ export function pipelineListState(searchParams: URLSearchParams): {
     ? (requestedStatus as PipelineStatusType)
     : "all"
   const page = readPage(searchParams)
+  const search = searchParams.get("search")?.trim() ?? ""
   return {
     status,
+    search,
     page,
     params: {
       status: status === "all" ? undefined : status,
+      search: search || undefined,
       limit: PIPELINE_PAGE_SIZE,
       offset: page * PIPELINE_PAGE_SIZE,
     },

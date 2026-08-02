@@ -6,6 +6,7 @@ import { Switch } from "@workspace/ui/components/switch"
 
 export type RuntimeEvent = {
   id: number
+  cursor: number
   sequence: number
   level: string
   event_type: string

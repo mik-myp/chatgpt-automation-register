@@ -58,8 +58,7 @@ def _json(response: Any, step: str) -> dict[str, Any]:
 
 def _backend_headers(flow: Any, access_token: str) -> dict[str, str]:
     headers = {
-        str(key): str(value)
-        for key, value in flow._common_headers("https://chatgpt.com/").items()
+        str(key): str(value) for key, value in flow._common_headers("https://chatgpt.com/").items()
     }
     headers.update(
         {
@@ -258,9 +257,7 @@ def _reauthenticate(
                 flow._account_security_used_password = True
                 extractor = getattr(flow, "_extract_continue_url_from_step", None)
                 continue_url = str(
-                    extractor(step)
-                    if callable(extractor)
-                    else step.get("continue_url") or ""
+                    extractor(step) if callable(extractor) else step.get("continue_url") or ""
                 )
             except RuntimeError as error:
                 if "invalid_username_or_password" not in str(error):
@@ -285,9 +282,7 @@ def _reauthenticate(
             timeout=30,
         )
         if validated.status_code == 200:
-            continue_url = str(
-                _json(validated, "验证账号邮箱验证码").get("continue_url") or ""
-            )
+            continue_url = str(_json(validated, "验证账号邮箱验证码").get("continue_url") or "")
         if not continue_url and retry_invalid_otp:
             logger.warning("账号邮箱验证码验证失败，重新建立授权会话后重试")
             return _reauthenticate(

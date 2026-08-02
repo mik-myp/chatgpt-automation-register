@@ -4,11 +4,17 @@ from functools import wraps
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
-from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
+from gpt_auto_register.db.models.kakao import (
+    KakaoClaimState,
+    KakaoEmailClaim,
+    KakaoTask,
+    KakaoTaskStatus,
+)
 from gpt_auto_register.modules.kakao.client import (
     canonical_payment_url,
     normalized_payment_state,
@@ -16,6 +22,10 @@ from gpt_auto_register.modules.kakao.client import (
 
 _KAKAO_STATE_LOCK = threading.RLock()
 _EXTRACTION_METADATA_KEY = "kakao_extraction"
+
+
+class KakaoClaimConflictError(RuntimeError):
+    pass
 
 
 def synchronized_kakao_state[**P, R](function: Callable[P, R]) -> Callable[P, R]:
@@ -91,13 +101,15 @@ def completed_extraction_emails(
     )
     credential_query = select(Credential)
     task_query = select(KakaoTask)
+    claim_query = select(KakaoEmailClaim).where(KakaoEmailClaim.state == KakaoClaimState.COMPLETED)
     if requested is not None:
         if not requested:
             return set()
         credential_query = credential_query.where(func.lower(Credential.email).in_(requested))
         task_query = task_query.where(func.lower(KakaoTask.email).in_(requested))
+        claim_query = claim_query.where(func.lower(KakaoEmailClaim.email).in_(requested))
 
-    completed: set[str] = set()
+    completed = {claim.email.strip().lower() for claim in session.scalars(claim_query)}
     for credential in session.scalars(credential_query):
         metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
         extraction = metadata.get(_EXTRACTION_METADATA_KEY)
@@ -111,6 +123,73 @@ def completed_extraction_emails(
     return completed
 
 
+def active_extraction_emails(
+    session: Session,
+    emails: Iterable[str] | None = None,
+) -> set[str]:
+    requested = (
+        {str(email).strip().lower() for email in emails if str(email).strip()}
+        if emails is not None
+        else None
+    )
+    query = select(KakaoEmailClaim.email).where(KakaoEmailClaim.state == KakaoClaimState.ACTIVE)
+    if requested is not None:
+        if not requested:
+            return set()
+        query = query.where(func.lower(KakaoEmailClaim.email).in_(requested))
+    return {str(email).strip().lower() for email in session.scalars(query)}
+
+
+@synchronized_kakao_state
+def claim_extraction(
+    session: Session,
+    email: str,
+    pipeline_run_id: str,
+    pipeline_item_id: str,
+) -> bool:
+    normalized = email.strip().lower()
+    existing = session.get(KakaoEmailClaim, normalized)
+    if existing is not None:
+        return (
+            existing.state == KakaoClaimState.ACTIVE
+            and existing.pipeline_item_id == pipeline_item_id
+        )
+    try:
+        with session.begin_nested():
+            session.add(
+                KakaoEmailClaim(
+                    email=normalized,
+                    state=KakaoClaimState.ACTIVE,
+                    pipeline_run_id=pipeline_run_id,
+                    pipeline_item_id=pipeline_item_id,
+                )
+            )
+            session.flush()
+    except IntegrityError:
+        return False
+    return True
+
+
+def require_extraction_claim(
+    session: Session,
+    email: str,
+    pipeline_run_id: str,
+    pipeline_item_id: str,
+) -> None:
+    if not claim_extraction(session, email, pipeline_run_id, pipeline_item_id):
+        raise KakaoClaimConflictError(f"邮箱已有 Kakao 提取任务：{email}")
+
+
+def release_extraction_claim(session: Session, task: KakaoTask) -> None:
+    claim = session.get(KakaoEmailClaim, task.email.strip().lower())
+    if (
+        claim is not None
+        and claim.state == KakaoClaimState.ACTIVE
+        and (claim.pipeline_item_id is None or claim.pipeline_item_id == task.pipeline_item_id)
+    ):
+        session.delete(claim)
+
+
 def mark_extraction_completed(session: Session, task: KakaoTask) -> bool:
     payment_url = str(task.payment_url or "").strip() or canonical_payment_url(
         task.upstream_payload or {}
@@ -120,6 +199,19 @@ def mark_extraction_completed(session: Session, task: KakaoTask) -> bool:
 
     changed = task.payment_url != payment_url
     task.payment_url = payment_url
+    normalized_email = task.email.strip().lower()
+    claim = session.get(KakaoEmailClaim, normalized_email)
+    if claim is None:
+        claim = KakaoEmailClaim(
+            email=normalized_email,
+            pipeline_run_id=task.pipeline_run_id,
+            pipeline_item_id=task.pipeline_item_id,
+        )
+        session.add(claim)
+        changed = True
+    if claim.state != KakaoClaimState.COMPLETED:
+        claim.state = KakaoClaimState.COMPLETED
+        changed = True
     credential = session.get(Credential, task.email.strip().lower())
     if credential is None:
         return changed
@@ -164,6 +256,11 @@ def apply_upstream(
         task.upstream_payload = value
     if session is not None:
         mark_extraction_completed(session, task)
+        if not task.payment_url and task.status in {
+            KakaoTaskStatus.FAILED,
+            KakaoTaskStatus.CANCELED,
+        }:
+            release_extraction_claim(session, task)
 
 
 def apply_payment(

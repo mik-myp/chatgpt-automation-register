@@ -11,8 +11,10 @@
   - wait_for_otp()    → 阻塞拉 OTP
   - last_persona      → None（不算法生成 persona）
 """
+
 from __future__ import annotations
 
+import contextlib
 import email as _email
 import email.utils as _eu
 import imaplib
@@ -23,8 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,15 @@ def _is_fatal_imap_error(exc: Exception) -> bool:
     return any(p in msg for p in _FATAL_IMAP_ERROR_PATTERNS)
 
 
+def _xoauth2_callback(email_addr: str, access_token: str):
+    auth_bytes = (f"user={email_addr}\x01auth=Bearer {access_token}\x01\x01").encode()
+
+    def callback(_challenge: bytes) -> bytes:
+        return auth_bytes
+
+    return callback
+
+
 # ──────────────────────── Microsoft OAuth ────────────────────────
 
 
@@ -78,12 +88,14 @@ def _request_access_token(refresh_token: str, client_id: str, scope: str) -> dic
     last_error = ""
     for endpoint in TOKEN_ENDPOINTS:
         try:
-            body = urllib.parse.urlencode({
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-                "scope": scope,
-            }).encode()
+            body = urllib.parse.urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "scope": scope,
+                }
+            ).encode()
             req = urllib.request.Request(endpoint, data=body)
             resp = urllib.request.urlopen(req, timeout=15)
             data = json.loads(resp.read())
@@ -113,14 +125,17 @@ def get_outlook_access_token(refresh_token: str, client_id: str) -> dict:
 def _is_hex_color_context(haystack: str, idx: int) -> bool:
     if idx > 0 and haystack[idx - 1] == "#":
         return True
-    before = haystack[max(0, idx - 30):idx]
-    return bool(re.search(
-        r"(?:color|background|bgcolor|fill|stroke)\s*[:=]\s*[\"']?#?\s*$",
-        before, re.IGNORECASE,
-    ))
+    before = haystack[max(0, idx - 30) : idx]
+    return bool(
+        re.search(
+            r"(?:color|background|bgcolor|fill|stroke)\s*[:=]\s*[\"']?#?\s*$",
+            before,
+            re.IGNORECASE,
+        )
+    )
 
 
-def _extract_otp_from_html(body: str) -> Optional[str]:
+def _extract_otp_from_html(body: str) -> str | None:
     for pat in (
         r"(?:code(?:\s*is)?|verification|one[-\s]*time|verify|kode|verifikasi|代码|验证码|驗證碼)[^\d<>]{0,80}(\d{6})\b",
         r"chatgpt[^\d<>]{0,80}(\d{6})",
@@ -139,9 +154,7 @@ def _check_from_domain(from_str: str) -> bool:
     from_lower = from_str.lower()
     if not any(d in from_lower for d in _FROM_DOMAINS):
         return False
-    if "tm1.openai" in from_lower:
-        return False
-    return True
+    return "tm1.openai" not in from_lower
 
 
 # ──────────────────────── Graph API 取件 ────────────────────────
@@ -181,7 +194,9 @@ def fetch_otp_via_graph(
                 if e.code == 401 and not token_refreshed:
                     try:
                         data = _request_access_token(
-                            cached_refresh, client_id, GRAPH_SCOPE,
+                            cached_refresh,
+                            client_id,
+                            GRAPH_SCOPE,
                         )
                         access_token = data["access_token"]
                         if data.get("refresh_token"):
@@ -204,9 +219,7 @@ def fetch_otp_via_graph(
                     except Exception:
                         continue
                 elif e.code in (400, 401, 403):
-                    raise FatalOutlookMailError(
-                        f"Graph API 无权限: HTTP {e.code}"
-                    )
+                    raise FatalOutlookMailError(f"Graph API 无权限: HTTP {e.code}") from e
                 else:
                     logger.debug(f"[outlook-graph] {folder} HTTP {e.code}")
                     continue
@@ -237,8 +250,7 @@ def fetch_otp_via_graph(
                 if target_email:
                     to_list = msg.get("toRecipients") or []
                     to_addrs = [
-                        (r.get("emailAddress") or {}).get("address", "").lower()
-                        for r in to_list
+                        (r.get("emailAddress") or {}).get("address", "").lower() for r in to_list
                     ]
                     if target_email.lower() not in to_addrs:
                         continue
@@ -252,9 +264,7 @@ def fetch_otp_via_graph(
 
                 otp = _extract_otp_from_html(body_content)
                 if otp:
-                    logger.info(
-                        f"[outlook-graph] {email_addr} 已获取 OTP folder={folder}"
-                    )
+                    logger.info(f"[outlook-graph] {email_addr} 已获取 OTP folder={folder}")
                     return otp
 
         token_refreshed = False
@@ -264,16 +274,21 @@ def fetch_otp_via_graph(
 
 
 def _graph_list_messages(access_token: str, folder: str, timeout: float = 15) -> list:
-    params = urllib.parse.urlencode({
-        "$top": "15",
-        "$orderby": "receivedDateTime DESC",
-        "$select": "id,subject,bodyPreview,body,receivedDateTime,from,toRecipients",
-    })
+    params = urllib.parse.urlencode(
+        {
+            "$top": "15",
+            "$orderby": "receivedDateTime DESC",
+            "$select": "id,subject,bodyPreview,body,receivedDateTime,from,toRecipients",
+        }
+    )
     url = f"{GRAPH_BASE}/me/mailFolders/{folder}/messages?{params}"
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
-    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+    )
     resp = urllib.request.urlopen(req, timeout=timeout)
     data = json.loads(resp.read())
     value = data.get("value") or []
@@ -343,22 +358,18 @@ def fetch_otp_via_imap(
                 if use_xoauth2 and cached_token:
                     try:
                         M = imaplib.IMAP4_SSL(host, 993, timeout=30)
-                        auth_str = (
-                            f"user={email_addr}\x01"
-                            f"auth=Bearer {cached_token}\x01\x01"
+                        M.authenticate(
+                            "XOAUTH2",
+                            _xoauth2_callback(email_addr, cached_token),
                         )
-                        M.authenticate("XOAUTH2", lambda x: auth_str.encode())
                     except Exception as e:
                         last_err = e
-                        try:
+                        with contextlib.suppress(Exception):
                             M.logout()
-                        except Exception:
-                            pass
                         M = None
                         if _is_fatal_imap_error(e):
                             logger.info(
-                                f"[outlook-imap] XOAUTH2 host={host} failed, "
-                                "继续尝试其它 IMAP host"
+                                f"[outlook-imap] XOAUTH2 host={host} failed, 继续尝试其它 IMAP host"
                             )
 
                 if not M and use_password:
@@ -367,10 +378,8 @@ def fetch_otp_via_imap(
                         M.login(email_addr, password)
                     except Exception as e:
                         last_err = e
-                        try:
+                        with contextlib.suppress(Exception):
                             M.logout()
-                        except Exception:
-                            pass
                         M = None
 
             if not M:
@@ -386,13 +395,10 @@ def fetch_otp_via_imap(
                     for raw in listing or []:
                         if not raw:
                             continue
-                        s = (
-                            raw.decode(errors="ignore")
-                            if isinstance(raw, bytes)
-                            else str(raw)
-                        )
+                        s = raw.decode(errors="ignore") if isinstance(raw, bytes) else str(raw)
                         m = re.search(
-                            r'"([^"]+)"\s*$', s,
+                            r'"([^"]+)"\s*$',
+                            s,
                         ) or re.search(r"\s(\S+)\s*$", s)
                         if m:
                             nm = m.group(1).strip('"')
@@ -403,10 +409,7 @@ def fetch_otp_via_imap(
                         if real and real not in picked:
                             picked.append(real)
                     for k, v in names_lower.items():
-                        if (
-                            any(x in k for x in ("junk", "spam", "bulk"))
-                            and v not in picked
-                        ):
+                        if any(x in k for x in ("junk", "spam", "bulk")) and v not in picked:
                             picked.append(v)
                     if "INBOX" not in picked:
                         picked.insert(0, "INBOX")
@@ -428,9 +431,7 @@ def fetch_otp_via_imap(
                     typ, data = M.search(None, "ALL")
                     ids = data[0].split() if data and data[0] else []
                 except Exception as e:
-                    logger.warning(
-                        f"[outlook-imap] SEARCH 失败 folder={folder}: {e}"
-                    )
+                    logger.warning(f"[outlook-imap] SEARCH 失败 folder={folder}: {e}")
                     continue
                 for mid in reversed(ids[-8:]):
                     key = (folder, mid)
@@ -461,39 +462,32 @@ def fetch_otp_via_imap(
                         if part.get_content_type() in ("text/plain", "text/html"):
                             try:
                                 payload = part.get_payload(decode=True) or b""
-                                text_body += payload.decode(
-                                    part.get_content_charset() or "utf-8",
-                                    errors="replace",
-                                ) + "\n"
+                                text_body += (
+                                    payload.decode(
+                                        part.get_content_charset() or "utf-8",
+                                        errors="replace",
+                                    )
+                                    + "\n"
+                                )
                             except Exception:
                                 continue
                     otp = _extract_otp_from_html(text_body)
                     if otp:
-                        logger.info(
-                            f"[outlook-imap] {email_addr} 已获取 OTP folder={folder!r}"
-                        )
-                        try:
+                        logger.info(f"[outlook-imap] {email_addr} 已获取 OTP folder={folder!r}")
+                        with contextlib.suppress(Exception):
                             M.logout()
-                        except Exception:
-                            pass
                         return otp
-            try:
+            with contextlib.suppress(Exception):
                 M.logout()
-            except Exception:
-                pass
         except FatalOutlookMailError:
             raise
         except Exception as e:
             if _is_fatal_imap_error(e):
-                raise FatalOutlookMailError(
-                    f"IMAP 不可用 {email_addr}: {e}"
-                ) from e
+                raise FatalOutlookMailError(f"IMAP 不可用 {email_addr}: {e}") from e
             logger.warning(f"[outlook-imap] 异常 (重试): {e}")
             if M:
-                try:
+                with contextlib.suppress(Exception):
                     M.logout()
-                except Exception:
-                    pass
         time.sleep(4)
     raise TimeoutError(f"outlook IMAP OTP timeout for {email_addr}")
 
@@ -536,7 +530,7 @@ class OutlookMailProvider:
         self,
         email_addr: str,
         timeout: int = 120,
-        issued_after: Optional[float] = None,
+        issued_after: float | None = None,
     ) -> str:
         method_timeout = max(1, int(timeout))
         strict_threshold = (issued_after - 5) if issued_after else (time.time() - 5)
@@ -596,10 +590,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if len(_sys.argv) < 2:
-        print(
-            "usage: python mail_outlook.py "
-            "'email----password----client_id----refresh_token'"
-        )
+        print("usage: python mail_outlook.py 'email----password----client_id----refresh_token'")
         _sys.exit(2)
     parts = _sys.argv[1].split("----")
     if len(parts) != 4:

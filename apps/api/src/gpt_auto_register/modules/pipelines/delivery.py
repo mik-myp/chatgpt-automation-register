@@ -126,6 +126,8 @@ def list_deliveries(
             if mail_url
             else "unavailable"
         )
+        payment_copyable = task.status == KakaoTaskStatus.DONE and bool(payment_url)
+        account_copyable = account_format != "unavailable"
         items.append(
             PipelineDeliverySummary(
                 task_id=task.id,
@@ -148,11 +150,9 @@ def list_deliveries(
                     if account_format == "unavailable"
                     else None
                 ),
-                deliverable=(
-                    task.status.value == "done"
-                    and bool(payment_url)
-                    and task.payment_status not in {"failed", "canceled", "expired"}
-                ),
+                payment_copyable=payment_copyable,
+                account_copyable=account_copyable,
+                deliverable=payment_copyable or account_copyable,
                 **plus_check_fields(credential),
             )
         )
@@ -211,6 +211,8 @@ def list_security_deliveries(
                 mfa_status=mfa_status,
                 account_format="security_credentials" if security_ready else "unavailable",
                 account_missing_reason=None if security_ready else "密码或 MFA 尚未全部完成",
+                payment_copyable=False,
+                account_copyable=security_ready,
                 deliverable=security_ready,
                 **plus_check_fields(credential),
             )
@@ -246,7 +248,8 @@ def format_deliveries(
     copy_marks: list[tuple[str, str]] = []
     copied_account_fingerprints = copied_account_fingerprints or {}
     for item in items:
-        if not item.deliverable:
+        copyable = item.payment_copyable if copy_type == "payment_links" else item.account_copyable
+        if not copyable:
             skipped += 1
             continue
         if copy_type == "account_info":

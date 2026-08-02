@@ -21,6 +21,7 @@ from gpt_auto_register.db.models.pipeline import (
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
 from gpt_auto_register.modules.pipelines import router as pipeline_router
+from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
 
 
@@ -59,9 +60,11 @@ def test_pipeline_detail_includes_snapshot_and_items(
 
     assert response.status_code == 200
     detail = response.json()
+    items = client.get(f"/api/pipelines/runs/{run.id}/items").json()
+    cards = client.get(f"/api/pipelines/runs/{run.id}/cards").json()
     assert detail["config_snapshot"] == {"registration": {"concurrency": 1}}
-    assert len(detail["items"]) == 1
-    assert detail["cards"][0]["card_code"] == "FULL-CARD-CODE"
+    assert len(items["items"]) == 1
+    assert cards["items"][0]["card_code"] == "FULL-CARD-CODE"
 
 
 def test_pipeline_event_stream_closes_after_terminal_event(
@@ -108,6 +111,25 @@ def test_pipeline_event_stream_closes_after_terminal_event(
     assert '"terminal":true' in body
 
 
+def test_pipeline_event_cursor_continues_across_retry_jobs(db_session: Session) -> None:
+    run = PipelineRun(target_count=1, config_snapshot={})
+    db_session.add(run)
+    db_session.flush()
+    first_job = Job(kind="pipeline.run", pipeline_run_id=run.id, payload={})
+    retry_job = Job(kind="pipeline.run", pipeline_run_id=run.id, payload={})
+    db_session.add_all([first_job, retry_job])
+    db_session.flush()
+    first_event = JobEvent(job_id=first_job.id, sequence=1, event_type="failed")
+    retry_event = JobEvent(job_id=retry_job.id, sequence=1, event_type="retry_started")
+    db_session.add_all([first_event, retry_event])
+    db_session.commit()
+
+    events = PipelineRepository(db_session).events(run.id, first_event.id, 100)
+
+    assert [event.id for event in events] == [retry_event.id]
+    assert events[0].sequence == 1
+
+
 def test_single_pipeline_preserves_requested_email(
     client: TestClient,
 ) -> None:
@@ -122,7 +144,7 @@ def test_single_pipeline_preserves_requested_email(
     )
 
     assert response.status_code == 201
-    detail_response = client.get(f"/api/pipelines/runs/{response.json()['id']}")
+    detail_response = client.get(f"/api/pipelines/runs/{response.json()['id']}/items")
     assert detail_response.status_code == 200
     assert detail_response.json()["items"][0]["account_email"] == "selected@example.com"
 
@@ -226,13 +248,14 @@ def test_pipeline_detail_includes_plus_state_and_card_assignments(
     )
     db_session.commit()
 
-    detail = client.get(f"/api/pipelines/runs/{run.id}").json()
+    items = client.get(f"/api/pipelines/runs/{run.id}/items").json()
+    cards = client.get(f"/api/pipelines/runs/{run.id}/cards").json()
     deliveries = client.get(f"/api/pipelines/runs/{run.id}/deliveries").json()
 
-    assert detail["items"][0]["plus_state"] == "plus"
-    assert detail["cards"][0]["assignments"] == [
+    assert items["items"][0]["plus_state"] == "plus"
+    assert cards["items"][0]["assignments"] == [
         {
-            "task_id": detail["cards"][0]["assignments"][0]["task_id"],
+            "task_id": cards["items"][0]["assignments"][0]["task_id"],
             "email": "plus@example.com",
             "status": "done",
             "payment_status": "ready",
@@ -386,10 +409,10 @@ def test_create_global_security_pipeline_without_source_run(
     assert run["kind"] == "account_security"
     assert run["source_pipeline_run_id"] is None
     assert run["target_count"] == 1
-    detail = client.get(f"/api/pipelines/runs/{run['id']}").json()
-    assert detail["items"][0]["account_email"] == "selected@example.com"
-    assert detail["items"][0]["password_status"] == "not_set"
-    assert detail["items"][0]["mfa_status"] == "not_enabled"
+    items = client.get(f"/api/pipelines/runs/{run['id']}/items").json()["items"]
+    assert items[0]["account_email"] == "selected@example.com"
+    assert items[0]["password_status"] == "not_set"
+    assert items[0]["mfa_status"] == "not_enabled"
 
 
 def test_create_global_kakao_pipeline_reserves_cards(
@@ -425,10 +448,11 @@ def test_create_global_kakao_pipeline_reserves_cards(
     assert run["kind"] == "kakao"
     assert run["target_count"] == 1
     assert run["kakao_enabled"] is True
-    detail = client.get(f"/api/pipelines/runs/{run['id']}").json()
-    assert detail["items"][0]["account_email"] == email
-    assert detail["items"][0]["card_code_snapshot"] == card.code
-    assert detail["cards"][0]["allocated_count"] == 1
+    items = client.get(f"/api/pipelines/runs/{run['id']}/items").json()["items"]
+    cards = client.get(f"/api/pipelines/runs/{run['id']}/cards").json()["items"]
+    assert items[0]["account_email"] == email
+    assert items[0]["card_code_snapshot"] == card.code
+    assert cards[0]["allocated_count"] == 1
 
 
 def test_create_global_kakao_pipeline_rejects_insufficient_capacity(

@@ -126,19 +126,32 @@ class AccountRepository:
 
     def import_accounts(self, accounts: list[ParsedAccount]) -> ImportCounts:
         inserted = updated = unchanged = 0
-        for value in accounts:
-            account = self.get(value.email)
-            if account is None:
-                self.session.add(
-                    OutlookAccount(
-                        email=value.email,
-                        password=value.password,
-                        client_id=value.client_id,
-                        refresh_token=value.refresh_token,
-                        mail_type=value.mail_type,
-                        mail_url=value.mail_url,
+        existing: dict[str, OutlookAccount] = {}
+        emails = [value.email for value in accounts]
+        for start in range(0, len(emails), 500):
+            existing.update(
+                {
+                    account.email: account
+                    for account in self.session.scalars(
+                        select(OutlookAccount).where(
+                            OutlookAccount.email.in_(emails[start : start + 500])
+                        )
                     )
+                }
+            )
+        for value in accounts:
+            account = existing.get(value.email)
+            if account is None:
+                account = OutlookAccount(
+                    email=value.email,
+                    password=value.password,
+                    client_id=value.client_id,
+                    refresh_token=value.refresh_token,
+                    mail_type=value.mail_type,
+                    mail_url=value.mail_url,
                 )
+                self.session.add(account)
+                existing[value.email] = account
                 inserted += 1
                 continue
 

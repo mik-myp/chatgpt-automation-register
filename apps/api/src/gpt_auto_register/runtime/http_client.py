@@ -2,8 +2,12 @@
 HTTP 客户端 - 使用 curl_cffi 实现 TLS 指纹模拟
 支持 Cloudflare 绕过，降级到 requests
 """
+
 import logging
-from typing import Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +21,6 @@ except ImportError:
     _HAS_CFFI = False
     logger.debug("curl_cffi 不可用，降级到 requests")
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 # 通用 UA（fallback，优先使用 fingerprint.generate_fingerprint() 生成的值）
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
@@ -29,9 +29,9 @@ USER_AGENT = (
 
 
 def create_http_session(
-    proxy: Optional[str] = None,
+    proxy: str | None = None,
     impersonate: str = "safari18_0",
-    user_agent: Optional[str] = None,
+    user_agent: str | None = None,
 ):
     """
     创建 HTTP 会话。优先使用 curl_cffi 模拟浏览器 TLS 指纹，
@@ -46,7 +46,7 @@ def create_http_session(
             # 这能减少本地 DNS/链路导致的 TLS 握手异常。
             normalized_proxy = proxy
             if proxy.startswith("socks5://"):
-                normalized_proxy = "socks5h://" + proxy[len("socks5://"):]
+                normalized_proxy = "socks5h://" + proxy[len("socks5://") :]
                 logger.info("代理协议已标准化: socks5:// -> socks5h://")
             session.proxies = {"https": normalized_proxy, "http": normalized_proxy}
         else:

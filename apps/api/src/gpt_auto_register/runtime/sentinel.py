@@ -52,6 +52,7 @@ def get_sentinel_token(
     """返回 (sentinel_token, so_token) 元组。失败抛 RuntimeError。"""
     try:
         from sentinel_quickjs import get_sentinel_token_via_quickjs
+
         qresult = get_sentinel_token_via_quickjs(
             session,
             device_id=device_id,

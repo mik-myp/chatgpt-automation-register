@@ -58,61 +58,65 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar {...props}>
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <NavLink to="/">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
-                  <WorkflowIcon className="size-4" />
-                </div>
-                <div className="flex min-w-0 flex-col leading-none">
-                  <span className="truncate font-medium">
-                    GPT Auto Register
-                  </span>
-                  <span className="text-xs text-muted-foreground">控制台</span>
-                </div>
-              </NavLink>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <SearchForm />
-      </SidebarHeader>
-      <SidebarContent>
-        {navigation.map((section) => (
-          <SidebarGroup key={section.title}>
-            <SidebarMenu>
-              <Collapsible asChild className="group/collapsible" defaultOpen>
-                <SidebarMenuItem>
-                  <CollapsibleTrigger asChild>
-                    <SidebarMenuButton>
-                      {section.title}
-                      <ChevronDownIcon className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-180" />
-                    </SidebarMenuButton>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <SidebarMenuSub>
-                      {section.items.map((item) => (
-                        <SidebarMenuSubItem key={item.url}>
-                          <SidebarMenuSubButton
-                            asChild
-                            isActive={location.pathname === item.url}
-                          >
-                            <NavLink to={item.url}>
-                              <item.icon />
-                              <span>{item.title}</span>
-                            </NavLink>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ))}
-                    </SidebarMenuSub>
-                  </CollapsibleContent>
-                </SidebarMenuItem>
-              </Collapsible>
-            </SidebarMenu>
-          </SidebarGroup>
-        ))}
-      </SidebarContent>
+      <nav aria-label="主导航" className="flex min-h-0 flex-1 flex-col">
+        <SidebarHeader>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton size="lg" asChild>
+                <NavLink to="/">
+                  <div className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+                    <WorkflowIcon className="size-4" />
+                  </div>
+                  <div className="flex min-w-0 flex-col leading-none">
+                    <span className="truncate font-medium">
+                      GPT Auto Register
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      控制台
+                    </span>
+                  </div>
+                </NavLink>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+          <SearchForm />
+        </SidebarHeader>
+        <SidebarContent>
+          {navigation.map((section) => (
+            <SidebarGroup key={section.title}>
+              <SidebarMenu>
+                <Collapsible asChild className="group/collapsible" defaultOpen>
+                  <SidebarMenuItem>
+                    <CollapsibleTrigger asChild>
+                      <SidebarMenuButton>
+                        {section.title}
+                        <ChevronDownIcon className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-180" />
+                      </SidebarMenuButton>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <SidebarMenuSub>
+                        {section.items.map((item) => (
+                          <SidebarMenuSubItem key={item.url}>
+                            <SidebarMenuSubButton
+                              asChild
+                              isActive={location.pathname === item.url}
+                            >
+                              <NavLink to={item.url}>
+                                <item.icon />
+                                <span>{item.title}</span>
+                              </NavLink>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        ))}
+                      </SidebarMenuSub>
+                    </CollapsibleContent>
+                  </SidebarMenuItem>
+                </Collapsible>
+              </SidebarMenu>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+      </nav>
       <SidebarRail />
     </Sidebar>
   )

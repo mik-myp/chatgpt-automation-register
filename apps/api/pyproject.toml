@@ -40,16 +40,6 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = [
-  "src/gpt_auto_register/runtime/auth_flow.py",
-  "src/gpt_auto_register/runtime/config.py",
-  "src/gpt_auto_register/runtime/fingerprint.py",
-  "src/gpt_auto_register/runtime/http_client.py",
-  "src/gpt_auto_register/runtime/mail_cf.py",
-  "src/gpt_auto_register/runtime/mail_outlook.py",
-  "src/gpt_auto_register/runtime/sms_provider.py",
-  "src/gpt_auto_register/runtime/webui",
-]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

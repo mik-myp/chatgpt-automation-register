@@ -25,7 +25,11 @@ from gpt_auto_register.modules.cards.allocator import (
     CardAllocator,
     card_allocation_guard,
 )
-from gpt_auto_register.modules.kakao.state import completed_extraction_emails
+from gpt_auto_register.modules.kakao.state import (
+    KakaoClaimConflictError,
+    active_extraction_emails,
+    completed_extraction_emails,
+)
 from gpt_auto_register.modules.pipelines.candidates import (
     list_kakao_candidate_credentials,
     list_security_candidate_credentials,
@@ -52,12 +56,14 @@ from gpt_auto_register.modules.pipelines.schemas import (
     KakaoPipelineCandidate,
     KakaoPipelineCandidateList,
     KakaoPipelineCandidatePage,
+    PipelineCardAllocationListResponse,
     PipelineCardAllocationSummary,
     PipelineCardAssignmentSummary,
     PipelineDeliveryCopyMark,
     PipelineDeliveryListResponse,
     PipelineEventListResponse,
     PipelineEventSummary,
+    PipelineItemListResponse,
     PipelineItemSummary,
     PipelineRunCreateRequest,
     PipelineRunDetail,
@@ -76,6 +82,7 @@ router = APIRouter(prefix="/pipelines/runs", tags=["pipeline-runs"])
 def _event_summary(event: JobEvent) -> PipelineEventSummary:
     return PipelineEventSummary(
         id=event.id,
+        cursor=event.id,
         sequence=event.sequence,
         level=event.level,
         event_type=event.event_type,
@@ -171,7 +178,7 @@ def _busy_kakao_emails(db: DatabaseSession) -> set[str]:
         )
         if email
     }
-    return pipeline_emails | task_emails
+    return pipeline_emails | task_emails | active_extraction_emails(db)
 
 
 def _kakao_candidate(credential: Credential) -> KakaoPipelineCandidate:
@@ -215,24 +222,26 @@ def _create_kakao_pipeline(
     source_run_id: str | None = None,
     allowed_emails: set[str] | None = None,
 ) -> PipelineRunSummary:
-    completed_emails = completed_extraction_emails(db, requested)
-    if completed_emails:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"所选账号中有 {len(completed_emails)} 个已生成过 Kakao 支付链接，请刷新后重新选择",
-        )
-    eligible = _eligible_kakao_accounts(
-        db,
-        requested,
-        allowed_emails=allowed_emails,
-    )
-    if not eligible:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "所选账号正在其他 Kakao 轮次中、缺少 Access Token、不属于来源轮次或已完成提取",
-        )
     try:
         with card_allocation_guard():
+            completed_emails = completed_extraction_emails(db, requested)
+            if completed_emails:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"所选账号中有 {len(completed_emails)} 个已生成过 Kakao 支付链接，"
+                    "请刷新后重新选择",
+                )
+            eligible = _eligible_kakao_accounts(
+                db,
+                requested,
+                allowed_emails=allowed_emails,
+            )
+            if len(eligible) != len(requested):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "所选账号中存在活动任务、缺少 Access Token、不属于来源轮次或已完成提取，"
+                    "请刷新后重新选择",
+                )
             card_slots, _ = CardAllocator(db).select(len(eligible))
             run = PipelineRepository(db).create_kakao(
                 source_run_id=source_run_id,
@@ -240,7 +249,8 @@ def _create_kakao_pipeline(
                 card_slots=card_slots,
             )
             db.commit()
-    except CardAllocationError as error:
+    except (CardAllocationError, KakaoClaimConflictError) as error:
+        db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
     db.refresh(run)
     return PipelineRunSummary.model_validate(run)
@@ -311,11 +321,13 @@ def _create_security_pipeline(
 def list_pipeline_runs(
     db: DatabaseSession,
     pipeline_status: Annotated[PipelineStatus | None, Query(alias="status")] = None,
+    search: str = "",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> PipelineRunListResponse:
     items, total = PipelineRepository(db).list_page(
         status=pipeline_status,
+        search=search.strip(),
         limit=limit,
         offset=offset,
     )
@@ -487,16 +499,16 @@ def create_global_kakao_pipeline_run(
 def list_pipeline_events(
     run_id: str,
     db: DatabaseSession,
-    after: Annotated[int, Query(ge=0)] = 0,
+    cursor: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> PipelineEventListResponse:
     run = PipelineRepository(db).get(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
-    events = PipelineRepository(db).events(run_id, after, limit)
+    events = PipelineRepository(db).events(run_id, cursor, limit)
     return PipelineEventListResponse(
         items=[_event_summary(event) for event in events],
-        last_sequence=events[-1].sequence if events else after,
+        last_cursor=events[-1].id if events else cursor,
         terminal=run.status
         in {PipelineStatus.COMPLETED, PipelineStatus.FAILED, PipelineStatus.CANCELED},
     )
@@ -506,14 +518,14 @@ def list_pipeline_events(
 def stream_pipeline_events(
     run_id: str,
     request: Request,
-    db: DatabaseSession,
-    after: Annotated[int, Query(ge=0)] = 0,
+    cursor: Annotated[int, Query(ge=0)] = 0,
 ) -> StreamingResponse:
-    if PipelineRepository(db).get(run_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+    with SessionLocal() as session:
+        if PipelineRepository(session).get(run_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
 
     async def stream() -> AsyncIterator[str]:
-        sequence = after
+        event_cursor = cursor
         idle_ticks = 0
         while not await request.is_disconnected():
             with SessionLocal() as session:
@@ -521,7 +533,7 @@ def stream_pipeline_events(
                 run = repository.get(run_id)
                 if run is None:
                     return
-                events = repository.events(run_id, sequence, 200)
+                events = repository.events(run_id, event_cursor, 200)
                 terminal = run.status in {
                     PipelineStatus.COMPLETED,
                     PipelineStatus.FAILED,
@@ -531,7 +543,7 @@ def stream_pipeline_events(
             if summaries:
                 idle_ticks = 0
                 for index, summary in enumerate(summaries):
-                    sequence = int(summary["sequence"])
+                    event_cursor = int(summary["cursor"])
                     payload = {
                         "event": summary,
                         "terminal": terminal and index == len(summaries) - 1,
@@ -541,7 +553,7 @@ def stream_pipeline_events(
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
-                    yield (f"id: {sequence}\ndata: {encoded}\n\n")
+                    yield (f"id: {event_cursor}\ndata: {encoded}\n\n")
             elif terminal:
                 yield 'data: {"terminal":true}\n\n'
             else:
@@ -887,17 +899,52 @@ def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
 
-    credentials = AccountRepository(db).credentials(
-        [item.account_email for item in repository.items(run_id) if item.account_email]
+    return PipelineRunDetail(
+        **PipelineRunSummary.model_validate(run).model_dump(),
+        config_snapshot=run.config_snapshot,
     )
-    items = []
-    for item in repository.items(run_id):
+
+
+@router.get("/{run_id}/items", response_model=PipelineItemListResponse)
+def list_pipeline_items(
+    run_id: str,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PipelineItemListResponse:
+    repository = PipelineRepository(db)
+    if repository.get(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+    rows, total = repository.items_page(run_id, limit=limit, offset=offset)
+    credentials = AccountRepository(db).credentials(
+        [item.account_email for item in rows if item.account_email]
+    )
+    items: list[PipelineItemSummary] = []
+    for item in rows:
         values = PipelineItemSummary.model_validate(item).model_dump()
         values.update(plus_check_fields(credentials.get(item.account_email or "")))
         items.append(PipelineItemSummary.model_validate(values))
+    return PipelineItemListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/{run_id}/cards", response_model=PipelineCardAllocationListResponse)
+def list_pipeline_cards(
+    run_id: str,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PipelineCardAllocationListResponse:
+    repository = PipelineRepository(db)
+    if repository.get(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+    allocations, total = repository.card_allocations_page(
+        run_id,
+        limit=limit,
+        offset=offset,
+    )
+    card_ids = [allocation.card_id for allocation, _ in allocations]
     assignments_by_card: dict[str, list[PipelineCardAssignmentSummary]] = {}
-    assignments_by_code: dict[str, list[PipelineCardAssignmentSummary]] = {}
-    for task in repository.card_assignments(run_id):
+    for task in repository.card_assignments(run_id, card_ids):
         assignment = PipelineCardAssignmentSummary(
             task_id=task.id,
             email=task.email,
@@ -907,8 +954,6 @@ def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
         )
         if task.card_id:
             assignments_by_card.setdefault(task.card_id, []).append(assignment)
-        if task.card_code_snapshot:
-            assignments_by_code.setdefault(task.card_code_snapshot, []).append(assignment)
     cards = [
         PipelineCardAllocationSummary(
             card_id=allocation.card_id,
@@ -917,15 +962,13 @@ def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
             created_count=allocation.created_count,
             duplicate_count=allocation.duplicate_count,
             failed_count=allocation.failed_count,
-            assignments=assignments_by_card.get(
-                allocation.card_id, assignments_by_code.get(code, [])
-            ),
+            assignments=assignments_by_card.get(allocation.card_id, []),
         )
-        for allocation, code in repository.card_allocations(run_id)
+        for allocation, code in allocations
     ]
-    return PipelineRunDetail(
-        **PipelineRunSummary.model_validate(run).model_dump(),
-        config_snapshot=run.config_snapshot,
-        items=items,
-        cards=cards,
+    return PipelineCardAllocationListResponse(
+        items=cards,
+        total=total,
+        limit=limit,
+        offset=offset,
     )

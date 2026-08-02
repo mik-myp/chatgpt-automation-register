@@ -58,8 +58,7 @@ def _json_value(value: Any) -> Any:
 
 def _row_data(row: Any) -> dict[str, Any]:
     return {
-        column.key: _json_value(getattr(row, column.key))
-        for column in inspect(type(row)).columns
+        column.key: _json_value(getattr(row, column.key)) for column in inspect(type(row)).columns
     }
 
 

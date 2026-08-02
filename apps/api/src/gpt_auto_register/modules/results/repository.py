@@ -36,16 +36,12 @@ class ResultRepository:
         if token_filter == "plus":
             filters.append(plus_state == "plus")
         elif token_filter == "not_plus":
-            filters.append(
-                plus_state.in_(["free", "not_plus", "other_plan", "deactivated"])
-            )
+            filters.append(plus_state.in_(["free", "not_plus", "other_plan", "deactivated"]))
         elif token_filter == "plus_unknown":
             filters.append(
                 or_(
                     plus_state.is_(None),
-                    plus_state.notin_(
-                        ["plus", "free", "not_plus", "other_plan", "deactivated"]
-                    ),
+                    plus_state.notin_(["plus", "free", "not_plus", "other_plan", "deactivated"]),
                 )
             )
         total = (

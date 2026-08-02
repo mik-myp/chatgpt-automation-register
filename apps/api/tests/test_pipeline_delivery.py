@@ -25,6 +25,8 @@ def _delivery(**overrides: object) -> PipelineDeliverySummary:
         "mfa_status": "enabled",
         "account_format": "security_credentials",
         "account_missing_reason": None,
+        "payment_copyable": True,
+        "account_copyable": True,
         "deliverable": True,
     }
     values.update(overrides)
@@ -90,7 +92,7 @@ def test_plus_only_setting_does_not_filter_payment_links() -> None:
 
 def test_delivery_copy_skips_items_without_payment_link() -> None:
     text, copied, skipped, *_ = format_deliveries(
-        [_delivery(payment_url=None, deliverable=False)],
+        [_delivery(payment_url=None, payment_copyable=False)],
         DeliveryCopySettings(),
         "payment_links",
     )
@@ -98,6 +100,24 @@ def test_delivery_copy_skips_items_without_payment_link() -> None:
     assert text == ""
     assert copied == 0
     assert skipped == 1
+
+
+def test_account_copy_does_not_depend_on_payment_copyability() -> None:
+    text, copied, skipped, *_ = format_deliveries(
+        [
+            _delivery(
+                payment_status="expired",
+                payment_copyable=False,
+                account_copyable=True,
+            )
+        ],
+        DeliveryCopySettings(),
+        "account_info",
+    )
+
+    assert copied == 1
+    assert skipped == 0
+    assert "user@example.com" in text
 
 
 def test_delivery_copy_rejects_mixed_payment_and_account_fields() -> None:

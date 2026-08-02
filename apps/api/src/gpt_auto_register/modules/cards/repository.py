@@ -43,9 +43,9 @@ class CardRepository:
             needle = f"%{search.strip().lower()}%"
             filters.append(func.lower(KakaoCard.code).like(needle))
 
-        total = self.session.scalar(
-            select(func.count()).select_from(KakaoCard).where(*filters)
-        ) or 0
+        total = (
+            self.session.scalar(select(func.count()).select_from(KakaoCard).where(*filters)) or 0
+        )
         rows = self.session.execute(
             select(
                 KakaoCard,
@@ -110,9 +110,15 @@ class CardRepository:
     def import_cards(self, codes: list[str], batch_name: str) -> tuple[str | None, int, int]:
         inserted = duplicates = 0
         batch: KakaoCardBatch | None = None
+        existing: set[str] = set()
+        for start in range(0, len(codes), 500):
+            existing.update(
+                self.session.scalars(
+                    select(KakaoCard.code).where(KakaoCard.code.in_(codes[start : start + 500]))
+                )
+            )
         for code in codes:
-            exists = self.session.scalar(select(KakaoCard.id).where(KakaoCard.code == code))
-            if exists is not None:
+            if code in existing:
                 duplicates += 1
                 continue
             if batch is None:
@@ -123,6 +129,7 @@ class CardRepository:
             self.session.add(
                 KakaoCard(batch_id=batch.id, code=code, position=inserted, active=True)
             )
+            existing.add(code)
             inserted += 1
         self.session.flush()
         return (batch.id if batch else None), inserted, duplicates

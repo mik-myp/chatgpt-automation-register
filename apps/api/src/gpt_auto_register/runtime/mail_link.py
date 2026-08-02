@@ -1,4 +1,5 @@
 """通过邮件查看链接轮询 OpenAI OTP。"""
+
 from __future__ import annotations
 
 import logging
@@ -35,10 +36,12 @@ class LinkMailProvider:
         else:
             try:
                 from curl_cffi.requests import Session
+
                 self._session = Session(impersonate="chrome136")
                 self._session.trust_env = False
             except ImportError:
                 import requests
+
                 self._session = requests.Session()
                 self._session.trust_env = False
 
@@ -79,8 +82,7 @@ class LinkMailProvider:
         deadline = time.time() + max(1, int(timeout))
         last_error = ""
         logger.info(
-            f"[mail-link] 等待 OTP -> {email_addr} "
-            f"(timeout={max(1, int(timeout))}s, interval=5s)"
+            f"[mail-link] 等待 OTP -> {email_addr} (timeout={max(1, int(timeout))}s, interval=5s)"
         )
 
         while time.time() < deadline:

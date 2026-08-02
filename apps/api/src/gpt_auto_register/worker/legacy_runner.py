@@ -333,6 +333,35 @@ def _flow_session_credential(flow: Any) -> dict[str, str]:
     }
 
 
+def _refresh_authorization(payload: dict[str, Any]) -> dict[str, Any]:
+    credential = payload["credential"]
+    mode = str(payload.get("mode") or "session")
+    flow, mail_provider = _security_context(payload)
+    if mode == "session":
+        session_token = str(credential.get("session_token") or "")
+        if not session_token:
+            cookie_value = getattr(flow, "_get_cookie_value_by_name", None)
+            if callable(cookie_value):
+                session_token = str(cookie_value("__Secure-next-auth.session-token") or "")
+        result = flow.from_existing_credentials(
+            session_token,
+            str(credential.get("access_token") or ""),
+            str(credential.get("device_id") or ""),
+        )
+    elif mode == "login":
+        result = flow.run_protocol_login(
+            mail_provider,
+            str(payload.get("account", {}).get("email") or ""),
+            str(credential.get("password") or ""),
+        )
+    else:
+        raise RuntimeError(f"不支持的授权恢复模式: {mode}")
+    value = result.to_dict()
+    if not value.get("access_token"):
+        raise RuntimeError("授权恢复后仍未获得 Access Token")
+    return {"ok": True, "credential": value, "mode": mode}
+
+
 def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
     from account_security import enable_authenticator_mfa
 
@@ -418,6 +447,8 @@ def main() -> None:
             result = _enable_mfa(payload)
         elif action == "set_password":
             result = _set_password(payload)
+        elif action == "refresh_authorization":
+            result = _refresh_authorization(payload)
         else:
             raise RuntimeError(f"不支持的旧运行时操作: {action}")
     except Exception as error:

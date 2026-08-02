@@ -17,6 +17,10 @@ export const router = createBrowserRouter([
         lazy: () => import("./routes/dashboard"),
       },
       {
+        path: "search",
+        lazy: () => import("./routes/search"),
+      },
+      {
         path: "pipelines",
         lazy: () => import("./routes/pipelines"),
       },
@@ -31,10 +35,6 @@ export const router = createBrowserRouter([
       {
         path: "cards",
         lazy: () => import("./routes/cards"),
-      },
-      {
-        path: "kakao",
-        lazy: () => import("./routes/kakao"),
       },
       {
         path: "results",

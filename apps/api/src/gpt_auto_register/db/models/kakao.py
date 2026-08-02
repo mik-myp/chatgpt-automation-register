@@ -72,6 +72,29 @@ class KakaoTaskStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class KakaoClaimState(StrEnum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+
+
+class KakaoEmailClaim(TimestampMixin, Base):
+    __tablename__ = "kakao_email_claims"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    state: Mapped[KakaoClaimState] = mapped_column(
+        enum_type(KakaoClaimState, "kakao_claim_state"),
+        default=KakaoClaimState.ACTIVE,
+        index=True,
+        nullable=False,
+    )
+    pipeline_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_runs.id", ondelete="SET NULL"), index=True
+    )
+    pipeline_item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_items.id", ondelete="SET NULL"), index=True
+    )
+
+
 class KakaoTask(TimestampMixin, Base):
     __tablename__ = "kakao_tasks"
 

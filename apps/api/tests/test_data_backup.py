@@ -59,9 +59,7 @@ def test_backup_rejects_tampered_bundle(client: TestClient, db_session: Session)
     assert "完整性校验失败" in response.json()["detail"]
 
 
-def test_backup_overwrite_protects_in_use_account(
-    client: TestClient, db_session: Session
-) -> None:
+def test_backup_overwrite_protects_in_use_account(client: TestClient, db_session: Session) -> None:
     db_session.add(OutlookAccount(email="busy@example.com", status=AccountStatus.IN_USE))
     db_session.commit()
     bundle = client.get("/api/settings/data/export").json()

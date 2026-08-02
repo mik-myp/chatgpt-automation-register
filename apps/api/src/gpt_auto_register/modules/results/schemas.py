@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gpt_auto_register.db.models.jobs import JobStatus
+
 
 class RegistrationResultSummary(BaseModel):
     email: str
@@ -62,6 +64,7 @@ class BulkResultResponse(BaseModel):
 
 class PlusCheckRequest(BulkResultRequest):
     proxy: str = ""
+    pipeline_run_id: str | None = None
 
 
 class PlusCheckItem(BaseModel):
@@ -90,6 +93,31 @@ class PublishResultsResponse(BaseModel):
     succeeded: int
     failed: int
     errors: list[str] = Field(default_factory=list)
+
+
+class ResultOperationSummary(BaseModel):
+    id: str
+    kind: Literal["results.plus_check", "results.publish"]
+    status: JobStatus
+    total: int
+    processed: int
+    succeeded: int
+    failed: int
+    plus: int = 0
+    unknown: int = 0
+    errors: list[str] = Field(default_factory=list)
+    cancelable: bool
+    retryable: bool
+    created_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None = None
+
+
+class ResultOperationListResponse(BaseModel):
+    items: list[ResultOperationSummary]
+    total: int
+    limit: int
+    offset: int
 
 
 class ExportResultsResponse(BaseModel):

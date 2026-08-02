@@ -3,6 +3,7 @@ from gpt_auto_register.db.models.jobs import Job, JobEvent
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
+    KakaoEmailClaim,
     KakaoTask,
     PipelineCardAllocation,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "JobEvent",
     "KakaoCard",
     "KakaoCardBatch",
+    "KakaoEmailClaim",
     "KakaoTask",
     "OutlookAccount",
     "PipelineCardAllocation",

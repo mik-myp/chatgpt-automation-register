@@ -10,6 +10,7 @@
     admin_token      Worker 配置的 ADMIN_PASSWORDS
     domain           主人配的 catch-all 域名（如 example.com）
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -19,19 +20,19 @@ import re
 import string
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def _gen_local_part(rng: Optional[random.Random] = None, length: int = 10) -> str:
+def _gen_local_part(rng: random.Random | None = None, length: int = 10) -> str:
     """生成随机邮箱前缀。参考 any-auto-register 用 10 位 lowercase+digits。"""
     r = rng or random
     return "".join(r.choices(string.ascii_lowercase + string.digits, k=length))
 
 
-def _extract_otp(raw: str, code_pattern: Optional[str] = None) -> Optional[str]:
+def _extract_otp(raw: str, code_pattern: str | None = None) -> str | None:
     """从邮件 raw 字段提取 6 位 OTP。
 
     借鉴 any-auto-register 的多层防误判逻辑：
@@ -43,25 +44,26 @@ def _extract_otp(raw: str, code_pattern: Optional[str] = None) -> Optional[str]:
         return None
 
     # 1. 优先匹配 <span>123456</span>
-    m = re.search(r'<span[^>]*>\s*(\d{6})\s*</span>', raw)
+    m = re.search(r"<span[^>]*>\s*(\d{6})\s*</span>", raw)
     if m:
         return m.group(1)
 
     # 2. 跳过 MIME header，只搜 body 部分
-    body_start = raw.find('\r\n\r\n')
+    body_start = raw.find("\r\n\r\n")
     search_text = raw[body_start:] if body_start != -1 else raw
 
     # 3. 排除邮箱地址（避免 user123456@x.com 误判）
     search_text = re.sub(
-        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-        '', search_text,
+        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        "",
+        search_text,
     )
     # 4. 排除时间戳模式（m=+XXXXXX. 和 t=XXXXXXXXXX）
-    search_text = re.sub(r'm=\+\d+\.\d+', '', search_text)
-    search_text = re.sub(r'\bt=\d+\b', '', search_text)
+    search_text = re.sub(r"m=\+\d+\.\d+", "", search_text)
+    search_text = re.sub(r"\bt=\d+\b", "", search_text)
 
     # 5. 提取 6 位 OTP，排除 hex 颜色（前缀 # 或紧跟其他数字）
-    pattern = code_pattern or r'(?<!#)(?<!\d)(\d{6})(?!\d)'
+    pattern = code_pattern or r"(?<!#)(?<!\d)(\d{6})(?!\d)"
     m = re.search(pattern, search_text)
     if m:
         return m.group(1) if m.groups() else m.group(0)
@@ -111,6 +113,7 @@ class CFTempEmailProvider:
         else:
             try:
                 from curl_cffi.requests import Session as CffiSession
+
                 self._session = CffiSession(impersonate="chrome136")
                 self._session.trust_env = False
             except ImportError:
@@ -140,7 +143,8 @@ class CFTempEmailProvider:
                     return self._session.get(url, headers=headers, params=params, timeout=timeout)
                 if json_body is not None:
                     return self._session.post(
-                        url, headers=headers,
+                        url,
+                        headers=headers,
                         data=_json.dumps(json_body, separators=(",", ":")),
                         timeout=timeout,
                     )
@@ -150,7 +154,6 @@ class CFTempEmailProvider:
 
         # urllib 兜底
         if params:
-            import urllib.parse
             qs = urllib.parse.urlencode(params)
             url = f"{url}?{qs}"
         body = _json.dumps(json_body).encode() if json_body is not None else None
@@ -165,11 +168,12 @@ class CFTempEmailProvider:
         except urllib.error.HTTPError as e:
             e.status_code = e.code
             try:
-                e._text = e.read().decode("utf-8", errors="replace")
+                body_text = e.read().decode("utf-8", errors="replace")
             except Exception:
-                e._text = ""
-            e.text = e._text
-            e.json = lambda: _json.loads(e._text or "{}")
+                body_text = ""
+            e._text = body_text
+            e.text = body_text
+            e.json = lambda text=body_text: _json.loads(text or "{}")
             return e
 
     @staticmethod
@@ -201,9 +205,7 @@ class CFTempEmailProvider:
         logger.debug(f"[cf_temp] new_address status={status} resp={text}")
 
         if status != 200:
-            raise RuntimeError(
-                f"CFTempEmail create_mailbox 失败: status={status} body={text}"
-            )
+            raise RuntimeError(f"CFTempEmail create_mailbox 失败: status={status} body={text}")
 
         data = self._parse_json(resp)
         # any-auto-register 双源兼容：email 或 address；token 或 jwt
@@ -217,15 +219,15 @@ class CFTempEmailProvider:
         self._current_email = email
         self._seen_mail_ids = set()
         logger.info(
-            f"[cf_temp] 创建邮箱: {email} "
-            f"jwt={'len='+str(len(token)) if token else 'NONE'}"
+            f"[cf_temp] 创建邮箱: {email} jwt={'len=' + str(len(token)) if token else 'NONE'}"
         )
         return email
 
     def _get_mails(self, email: str) -> list:
         """拉指定邮箱的最新邮件列表（默认 limit=20）。"""
         resp = self._request(
-            "GET", "/admin/mails",
+            "GET",
+            "/admin/mails",
             params={"limit": 20, "offset": 0, "address": email},
             timeout=10,
         )
@@ -244,7 +246,7 @@ class CFTempEmailProvider:
         self,
         email_addr: str,
         timeout: int = 120,
-        issued_after: Optional[float] = None,
+        issued_after: float | None = None,
     ) -> str:
         """轮询 /admin/mails 等待 OTP（6 位数字）。
 
@@ -281,14 +283,12 @@ class CFTempEmailProvider:
                     raw = str(mail.get("raw") or "")
                     otp = _extract_otp(raw)
                     if otp:
-                        logger.info(
-                            f"[cf_temp] 已获取 OTP from mail id={mid} raw_len={len(raw)}"
-                        )
+                        logger.info(f"[cf_temp] 已获取 OTP from mail id={mid} raw_len={len(raw)}")
                         return otp
                     # 没匹配到也记日志便于排查
                     logger.debug(
                         f"[cf_temp] mail id={mid} 未匹配到 OTP "
-                        f"(subject={mail.get('subject','')[:50]})"
+                        f"(subject={mail.get('subject', '')[:50]})"
                     )
             except Exception as e:
                 logger.warning(f"[cf_temp] poll 异常 (吃掉重试): {e}")
@@ -300,6 +300,7 @@ class CFTempEmailProvider:
 if __name__ == "__main__":
     # 命令行测试：python mail_cf.py <api_url> <admin_token> <domain>
     import sys
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if len(sys.argv) < 4:
         print("usage: python mail_cf.py <api_url> <admin_token> <domain>")
@@ -307,7 +308,7 @@ if __name__ == "__main__":
     p = CFTempEmailProvider(api_url=sys.argv[1], admin_token=sys.argv[2], domain=sys.argv[3])
     email = p.create_mailbox()
     print(f"创建邮箱: {email}")
-    print(f"开始等待 OTP（120s）...")
+    print("开始等待 OTP（120s）...")
     try:
         code = p.wait_for_otp(email, timeout=120)
         print("OTP received")

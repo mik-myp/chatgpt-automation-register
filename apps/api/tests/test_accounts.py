@@ -88,3 +88,17 @@ def test_reimport_updates_source_without_resetting_state(client: TestClient) -> 
     detail = client.get("/api/accounts/alpha@example.com").json()
     assert detail["status"] == "in_use"
     assert detail["password"] == "new-secret"
+
+
+def test_large_account_import_is_batched_below_sqlite_parameter_limit(
+    client: TestClient,
+) -> None:
+    lines = [
+        f"user-{index}@example.com----password----client----refresh-{index}"
+        for index in range(1001)
+    ]
+
+    response = client.post("/api/accounts/import", json={"text": "\n".join(lines)})
+
+    assert response.status_code == 200
+    assert response.json()["inserted"] == 1001

@@ -2,11 +2,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.jobs import Job, JobStatus
-from gpt_auto_register.worker import manager
+from gpt_auto_register.worker import account_security_executor, manager
 
 
 def test_account_security_failure_marks_job_failed(
-    db_session: Session, monkeypatch,
+    db_session: Session,
+    monkeypatch,
 ) -> None:
     worker = manager.WorkerManager()
     job = Job(
@@ -39,16 +40,17 @@ def test_account_security_failure_marks_job_failed(
 
 
 def test_failed_security_action_persists_refreshed_session(
-    db_session: Session, monkeypatch,
+    db_session: Session,
+    monkeypatch,
 ) -> None:
     email = "user@example.com"
     db_session.add(Credential(email=email, cookie_header="old-cookie", metadata_json={}))
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(manager, "SessionLocal", factory)
+    monkeypatch.setattr(account_security_executor, "SessionLocal", factory)
 
-    manager.AccountSecurityExecutor._persist_session(
+    account_security_executor.AccountSecurityExecutor._persist_session(
         email,
         {
             "access_token": "refreshed-access-token",

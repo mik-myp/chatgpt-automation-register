@@ -1,4 +1,4 @@
-import { useDeferredValue } from "react"
+import { useSearchParams } from "react-router"
 import { Inbox, RefreshCcw, Search, Upload } from "lucide-react"
 
 import {
@@ -22,6 +22,7 @@ import {
   accountErrorMessage,
   ACCOUNT_STATUS_LABELS,
 } from "@/features/accounts/lib/account-state"
+import { accountsRouteState } from "@/features/accounts/lib/accounts-route-state"
 import { formatCompactBeijingDateTime } from "@/lib/date-time"
 import { useAccountsStore } from "@/stores/accounts-store"
 import { Button } from "@workspace/ui/components/button"
@@ -44,27 +45,14 @@ import {
 } from "@workspace/ui/components/table"
 
 export function AccountsPage() {
-  const search = useAccountsStore((state) => state.search)
-  const status = useAccountsStore((state) => state.status)
-  const page = useAccountsStore((state) => state.page)
-  const pageSize = useAccountsStore((state) => state.pageSize)
-  const setSearch = useAccountsStore((state) => state.setSearch)
-  const setStatus = useAccountsStore((state) => state.setStatus)
-  const setPage = useAccountsStore((state) => state.setPage)
-  const setPageSize = useAccountsStore((state) => state.setPageSize)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { search, status, page, pageSize, params } = accountsRouteState(searchParams)
   const setImportOpen = useAccountsStore((state) => state.setImportOpen)
   const selectedEmails = useAccountsStore((state) => state.selectedEmails)
   const setSelectedEmails = useAccountsStore((state) => state.setSelectedEmails)
   const toggleSelectedEmail = useAccountsStore(
     (state) => state.toggleSelectedEmail
   )
-  const deferredSearch = useDeferredValue(search.trim())
-  const params = {
-    search: deferredSearch || undefined,
-    status: status === "all" ? undefined : status,
-    limit: pageSize,
-    offset: page * pageSize,
-  }
   const accounts = useListAccountsApiAccountsGet(params, {
     query: {
       queryKey: getListAccountsApiAccountsGetQueryKey(params),
@@ -104,14 +92,33 @@ export function AccountsPage() {
               <Input
                 aria-label="搜索账号"
                 className="pl-8"
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSearchParams((current) => {
+                    const next = new URLSearchParams(current)
+                    const value = event.target.value.trim()
+                    if (value) next.set("search", value)
+                    else next.delete("search")
+                    next.delete("page")
+                    return next
+                  }, { replace: true })
+                  setSelectedEmails([])
+                }}
                 placeholder="搜索邮箱或失败原因"
                 value={search}
               />
             </div>
             <Select
               value={status}
-              onValueChange={(value) => setStatus(value as typeof status)}
+              onValueChange={(value) => {
+                setSearchParams((current) => {
+                  const next = new URLSearchParams(current)
+                  if (value === "all") next.delete("status")
+                  else next.set("status", value)
+                  next.delete("page")
+                  return next
+                })
+                setSelectedEmails([])
+              }}
             >
               <SelectTrigger aria-label="账号状态" className="w-30">
                 <SelectValue />
@@ -298,8 +305,25 @@ export function AccountsPage() {
           pageCount={pageCount}
           pageSize={pageSize}
           total={total}
-          onPageChange={setPage}
-          onPageSizeChange={setPageSize}
+          onPageChange={(value) => {
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current)
+              if (value === 0) next.delete("page")
+              else next.set("page", String(value + 1))
+              return next
+            })
+            setSelectedEmails([])
+          }}
+          onPageSizeChange={(value) => {
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current)
+              if (value === 25) next.delete("page_size")
+              else next.set("page_size", String(value))
+              next.delete("page")
+              return next
+            })
+            setSelectedEmails([])
+          }}
         />
       </section>
 

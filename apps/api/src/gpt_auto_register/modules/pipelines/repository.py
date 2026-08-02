@@ -1,6 +1,6 @@
 from collections import Counter
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from gpt_auto_register.db.base import utc_now
@@ -11,7 +11,13 @@ from gpt_auto_register.db.models.accounts import (
     RunStatus,
 )
 from gpt_auto_register.db.models.jobs import Job, JobEvent, JobStatus
-from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, PipelineCardAllocation
+from gpt_auto_register.db.models.kakao import (
+    KakaoCard,
+    KakaoClaimState,
+    KakaoEmailClaim,
+    KakaoTask,
+    PipelineCardAllocation,
+)
 from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
     PipelineItemStatus,
@@ -20,6 +26,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineStatus,
 )
 from gpt_auto_register.db.result import affected_rows
+from gpt_auto_register.modules.kakao.state import require_extraction_claim
 
 
 class PipelineRepository:
@@ -89,7 +96,7 @@ class PipelineRepository:
         )
         self.session.add(run)
         self.session.flush()
-        self.session.add_all(
+        items = [
             PipelineItem(
                 pipeline_run_id=run.id,
                 position=position,
@@ -97,7 +104,16 @@ class PipelineRepository:
                 card_code_snapshot=card_slots[position],
             )
             for position, email in enumerate(emails)
-        )
+        ]
+        self.session.add_all(items)
+        self.session.flush()
+        for item in items:
+            require_extraction_claim(
+                self.session,
+                item.account_email or "",
+                run.id,
+                item.id,
+            )
         self._reserve_cards(run.id, card_slots)
         self.session.add(
             Job(
@@ -172,10 +188,25 @@ class PipelineRepository:
         self,
         *,
         status: PipelineStatus | None,
+        search: str = "",
         limit: int,
         offset: int,
     ) -> tuple[list[PipelineRun], int]:
         filters = [PipelineRun.status == status] if status is not None else []
+        if search:
+            needle = f"%{search.strip().lower()}%"
+            filters.append(
+                or_(
+                    func.lower(PipelineRun.id).like(needle),
+                    func.lower(PipelineRun.mode).like(needle),
+                    select(PipelineItem.id)
+                    .where(
+                        PipelineItem.pipeline_run_id == PipelineRun.id,
+                        func.lower(PipelineItem.account_email).like(needle),
+                    )
+                    .exists(),
+                )
+            )
         total = (
             self.session.scalar(select(func.count()).select_from(PipelineRun).where(*filters)) or 0
         )
@@ -199,6 +230,28 @@ class PipelineRepository:
             )
         )
 
+    def items_page(
+        self,
+        run_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[PipelineItem], int]:
+        filters = [PipelineItem.pipeline_run_id == run_id]
+        total = (
+            self.session.scalar(select(func.count()).select_from(PipelineItem).where(*filters)) or 0
+        )
+        items = list(
+            self.session.scalars(
+                select(PipelineItem)
+                .where(*filters)
+                .order_by(PipelineItem.position)
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        return items, total
+
     def card_allocations(self, run_id: str) -> list[tuple[PipelineCardAllocation, str]]:
         rows = self.session.execute(
             select(PipelineCardAllocation, KakaoCard.code)
@@ -208,14 +261,39 @@ class PipelineRepository:
         )
         return [(allocation, code) for allocation, code in rows]
 
-    def card_assignments(self, run_id: str) -> list[KakaoTask]:
-        return list(
-            self.session.scalars(
-                select(KakaoTask)
-                .where(KakaoTask.pipeline_run_id == run_id)
-                .order_by(KakaoTask.created_at, KakaoTask.id)
+    def card_allocations_page(
+        self,
+        run_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[PipelineCardAllocation, str]], int]:
+        filters = [PipelineCardAllocation.pipeline_run_id == run_id]
+        total = (
+            self.session.scalar(
+                select(func.count()).select_from(PipelineCardAllocation).where(*filters)
             )
+            or 0
         )
+        rows = self.session.execute(
+            select(PipelineCardAllocation, KakaoCard.code)
+            .join(KakaoCard, KakaoCard.id == PipelineCardAllocation.card_id)
+            .where(*filters)
+            .order_by(KakaoCard.position, KakaoCard.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return [(allocation, code) for allocation, code in rows], total
+
+    def card_assignments(
+        self,
+        run_id: str,
+        card_ids: list[str] | None = None,
+    ) -> list[KakaoTask]:
+        query = select(KakaoTask).where(KakaoTask.pipeline_run_id == run_id)
+        if card_ids is not None:
+            query = query.where(KakaoTask.card_id.in_(card_ids))
+        return list(self.session.scalars(query.order_by(KakaoTask.created_at, KakaoTask.id)))
 
     def cancel_runs(self, run_ids: list[str]) -> int:
         now = utc_now()
@@ -241,6 +319,12 @@ class PipelineRepository:
         return affected_rows(result)
 
     def delete_runs(self, run_ids: list[str]) -> int:
+        self.session.execute(
+            delete(KakaoEmailClaim).where(
+                KakaoEmailClaim.pipeline_run_id.in_(run_ids),
+                KakaoEmailClaim.state == KakaoClaimState.ACTIVE,
+            )
+        )
         result = self.session.execute(
             delete(PipelineRun).where(
                 PipelineRun.id.in_(run_ids),
@@ -279,28 +363,22 @@ class PipelineRepository:
         )
         return affected_rows(result)
 
-    def events(self, run_id: str, after: int, limit: int) -> list[JobEvent]:
-        job = self.session.scalar(
-            select(Job)
-            .where(Job.pipeline_run_id == run_id)
-            .order_by(Job.created_at.desc())
-            .limit(1)
+    def events(self, run_id: str, after_cursor: int, limit: int) -> list[JobEvent]:
+        query = (
+            select(JobEvent)
+            .join(Job, Job.id == JobEvent.job_id)
+            .where(
+                Job.pipeline_run_id == run_id,
+                JobEvent.id > after_cursor,
+            )
         )
-        if job is None:
-            return []
-        query = select(JobEvent).where(
-            JobEvent.job_id == job.id,
-            JobEvent.sequence > after,
-        )
-        if after == 0:
+        if after_cursor == 0:
             return list(
                 reversed(
-                    list(
-                        self.session.scalars(query.order_by(JobEvent.sequence.desc()).limit(limit))
-                    )
+                    list(self.session.scalars(query.order_by(JobEvent.id.desc()).limit(limit)))
                 )
             )
-        return list(self.session.scalars(query.order_by(JobEvent.sequence).limit(limit)))
+        return list(self.session.scalars(query.order_by(JobEvent.id).limit(limit)))
 
     def retry_items(self, run_id: str, item_ids: list[str]) -> int:
         claimed_ids = list(

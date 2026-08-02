@@ -5,7 +5,7 @@ import MockAdapter from "axios-mock-adapter"
 import { MemoryRouter } from "react-router"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { type PipelineRunDetail } from "@/api/generated"
+import type { PipelineItemSummary, PipelineRunDetail } from "@/api/generated"
 import { CreateRegistrationDialog } from "@/features/pipelines/components/create-registration-dialog"
 import { apiClient } from "@/lib/api-client"
 
@@ -235,53 +235,78 @@ describe("SecurityPipelineRunView", () => {
       created_at: "2026-08-02T00:00:00Z",
       updated_at: "2026-08-02T00:00:00Z",
       config_snapshot: {},
-      cards: [],
-      items: [
-        {
-          id: "item-1",
-          position: 0,
-          account_email: "selected@example.com",
-          registration_run_id: null,
-          status: "completed",
-          eligibility_state: null,
-          password_status: "set",
-          mfa_status: "enabled",
-          security_error: null,
-          error: null,
-          created_at: "2026-08-02T00:00:00Z",
-          updated_at: "2026-08-02T00:00:00Z",
-        },
-        {
-          id: "item-2",
-          position: 1,
-          account_email: "other@example.com",
-          registration_run_id: null,
-          status: "completed",
-          eligibility_state: null,
-          password_status: "set",
-          mfa_status: "enabled",
-          security_error: null,
-          error: null,
-          created_at: "2026-08-02T00:00:00Z",
-          updated_at: "2026-08-02T00:00:00Z",
-        },
-      ],
     }
-    mock.onPost("/api/results/check-plus").reply(200, {
-      items: [
-        {
-          email: "selected@example.com",
-          state: "plus",
-          label: "Plus 已生效",
-          is_plus: true,
-          error: "",
-        },
-      ],
+    const items: PipelineItemSummary[] = [
+      {
+        id: "item-1",
+        position: 0,
+        account_email: "selected@example.com",
+        registration_run_id: null,
+        status: "completed",
+        eligibility_state: null,
+        password_status: "set",
+        mfa_status: "enabled",
+        security_error: null,
+        error: null,
+        created_at: "2026-08-02T00:00:00Z",
+        updated_at: "2026-08-02T00:00:00Z",
+      },
+      {
+        id: "item-2",
+        position: 1,
+        account_email: "other@example.com",
+        registration_run_id: null,
+        status: "completed",
+        eligibility_state: null,
+        password_status: "set",
+        mfa_status: "enabled",
+        security_error: null,
+        error: null,
+        created_at: "2026-08-02T00:00:00Z",
+        updated_at: "2026-08-02T00:00:00Z",
+      },
+    ]
+    const operation = {
+      id: "plus-job",
+      kind: "results.plus_check",
+      status: "queued",
+      total: 1,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      plus: 0,
+      unknown: 0,
+      errors: [],
+      cancelable: true,
+      retryable: false,
+      created_at: "2026-08-02T00:00:00Z",
+      updated_at: "2026-08-02T00:00:00Z",
+      finished_at: null,
+    }
+    mock.onPost("/api/results/check-plus").reply(202, operation)
+    mock.onGet("/api/result-operations/plus-job").reply(200, {
+      ...operation,
+      status: "succeeded",
+      processed: 1,
+      succeeded: 1,
+      plus: 1,
+      cancelable: false,
+      finished_at: "2026-08-02T00:01:00Z",
     })
     renderWithClient(
       <SecurityPipelineRunView
         data={data}
-        events={{ data: { items: [] }, isLoading: false }}
+        items={{
+          data: { items, total: 2, limit: 50, offset: 0 },
+          isLoading: false,
+          isFetching: false,
+          refetch: vi.fn().mockResolvedValue(undefined),
+        }}
+        events={{
+          data: { items: [] },
+          isLoading: false,
+          refetch: vi.fn().mockResolvedValue(undefined),
+        }}
         refresh={refresh}
         refreshing={false}
       />
@@ -295,7 +320,8 @@ describe("SecurityPipelineRunView", () => {
       emails: ["selected@example.com"],
       all: false,
       proxy: "",
+      pipeline_run_id: null,
     })
-    expect(refresh).toHaveBeenCalled()
+    await waitFor(() => expect(refresh).toHaveBeenCalled())
   })
 })

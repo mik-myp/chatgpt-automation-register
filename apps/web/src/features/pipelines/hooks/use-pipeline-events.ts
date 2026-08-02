@@ -8,7 +8,7 @@ import { env } from "@/lib/env"
 
 export type PipelineEventPage = {
   items: RuntimeEvent[]
-  last_sequence: number
+  last_cursor: number
   terminal: boolean
 }
 
@@ -38,7 +38,7 @@ export function usePipelineEvents(runId: string) {
     if (!current) return
     const baseUrl = env.VITE_API_BASE_URL.replace(/\/$/, "")
     const source = new EventSource(
-      `${baseUrl}/pipelines/runs/${encodeURIComponent(runId)}/events/stream?after=${current.last_sequence}`
+      `${baseUrl}/pipelines/runs/${encodeURIComponent(runId)}/events/stream?cursor=${current.last_cursor}`
     )
     source.onmessage = (message) => {
       let payload: PipelineEventStreamPayload
@@ -52,20 +52,28 @@ export function usePipelineEvents(runId: string) {
         const items = payload.event
           ? [
               ...current.items.filter(
-                (item) => item.sequence !== payload.event?.sequence
+                (item) => item.cursor !== payload.event?.cursor
               ),
               payload.event,
             ].slice(-500)
           : current.items
         return {
           items,
-          last_sequence: payload.event?.sequence ?? current.last_sequence,
+          last_cursor: payload.event?.cursor ?? current.last_cursor,
           terminal: Boolean(payload.terminal),
         }
       })
-      void queryClient.invalidateQueries({
-        queryKey: getGetPipelineRunApiPipelinesRunsRunIdGetQueryKey(runId),
-      })
+      if (payload.event?.event_type !== "runtime_log") {
+        void queryClient.invalidateQueries({
+          queryKey: getGetPipelineRunApiPipelinesRunsRunIdGetQueryKey(runId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: [`/api/pipelines/runs/${runId}/items`],
+        })
+        void queryClient.invalidateQueries({
+          queryKey: [`/api/pipelines/runs/${runId}/cards`],
+        })
+      }
       if (payload.event?.event_type.startsWith("kakao_")) {
         void queryClient.invalidateQueries({ queryKey: ["/api/kakao/tasks"] })
         void queryClient.invalidateQueries({

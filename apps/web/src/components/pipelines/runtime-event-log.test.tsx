@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest"
 import { RuntimeEventLog, type RuntimeEvent } from "./runtime-event-log"
 
 const base: RuntimeEvent = {
-  id: 1,
+      id: 1,
+      cursor: 1,
   sequence: 1,
   level: "error",
   event_type: "runtime_log",
