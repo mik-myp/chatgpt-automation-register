@@ -1,7 +1,6 @@
 import { useDeferredValue, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
-  CreditCard,
   Download,
   Eye,
   Inbox,
@@ -138,25 +137,6 @@ export function ResultsPage() {
         `Plus 检查完成：确认 Plus ${plus}/${data.items.length}${unknown ? `，无法确认 ${unknown}` : ""}`
       )
     },
-    onError: (error) => toast.error(error.message),
-  })
-  const kakaoMutation = useMutation<
-    { created: number; duplicates: number },
-    ApiError,
-    void
-  >({
-    mutationFn: () =>
-      apiRequest<{ created: number; duplicates: number }>(
-        "/api/kakao/tasks/create",
-        {
-          method: "POST",
-          data: { emails: selected },
-        }
-      ),
-    onSuccess: (data) =>
-      toast.success(
-        `Kakao 任务已创建 ${data.created} 个，重复 ${data.duplicates} 个`
-      ),
     onError: (error) => toast.error(error.message),
   })
   const publishMutation = useMutation<
@@ -306,15 +286,6 @@ export function ResultsPage() {
                 >
                   <ShieldCheck />
                   严格检查 Plus
-                </Button>
-                <Button
-                  disabled={kakaoMutation.isPending}
-                  onClick={() => kakaoMutation.mutate()}
-                  size="sm"
-                  variant="outline"
-                >
-                  <CreditCard />
-                  创建 Kakao
                 </Button>
                 <Button
                   disabled={publishMutation.isPending}

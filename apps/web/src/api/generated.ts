@@ -466,6 +466,11 @@ export interface CopySecurityCredentialsRequest {
   all_completed?: boolean;
 }
 
+export interface CreateKakaoPipelineRequest {
+  /** @minItems 1 */
+  emails: string[];
+}
+
 export interface CreateSecurityPipelineRequest {
   /** @minItems 1 */
   emails: string[];
@@ -655,16 +660,6 @@ export interface ImportCardsResponse {
   duplicates: number;
 }
 
-export interface KakaoCreateTasksRequest {
-  /** @minItems 1 */
-  emails: string[];
-}
-
-export interface KakaoCreateTasksResponse {
-  created: number;
-  duplicates: number;
-}
-
 export interface KakaoEligibilityItem {
   email: string;
   eligible: boolean;
@@ -679,6 +674,24 @@ export interface KakaoEligibilityRequest {
 
 export interface KakaoEligibilityResponse {
   items: KakaoEligibilityItem[];
+}
+
+export interface KakaoPipelineCandidate {
+  email: string;
+  eligibility_state?: string | null;
+  eligibility_error?: string | null;
+  eligibility_checked_at?: string | null;
+}
+
+export interface KakaoPipelineCandidateList {
+  items: KakaoPipelineCandidate[];
+}
+
+export interface KakaoPipelineCandidatePage {
+  items: KakaoPipelineCandidate[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface KakaoSettings {
@@ -885,6 +898,7 @@ export interface PipelineItemSummary {
   position: number;
   account_email: string | null;
   registration_run_id: string | null;
+  card_code_snapshot?: string | null;
   status: PipelineItemStatus;
   eligibility_state: string | null;
   password_status: string | null;
@@ -932,6 +946,7 @@ export type PipelineRunKind = typeof PipelineRunKind[keyof typeof PipelineRunKin
 export const PipelineRunKind = {
   registration: 'registration',
   account_security: 'account_security',
+  kakao: 'kakao',
 } as const;
 
 export type PipelineStatus = typeof PipelineStatus[keyof typeof PipelineStatus];
@@ -1323,6 +1338,19 @@ offset?: number;
 };
 
 export type ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams = {
+search?: string;
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * @minimum 0
+ */
+offset?: number;
+};
+
+export type ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetParams = {
 search?: string;
 /**
  * @minimum 1
@@ -3094,6 +3122,141 @@ export const useCreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost 
     }
 
 /**
+ * @summary List Global Kakao Pipeline Candidates
+ */
+export const listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet = (
+    params?: ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetParams,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<KakaoPipelineCandidatePage>(
+      {url: `/api/pipelines/runs/kakao-candidates`, method: 'GET',
+        params, signal
+    },
+      options);
+    }
+
+
+
+
+export const getListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryKey = (params?: ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetParams,) => {
+    return [
+    `/api/pipelines/runs/kakao-candidates`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryOptions = <TData = Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>, TError = HTTPValidationError>(params?: ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>> = ({ signal }) => listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet(params, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryResult = NonNullable<Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>>
+export type ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary List Global Kakao Pipeline Candidates
+ */
+
+export function useListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet<TData = Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>, TError = HTTPValidationError>(
+ params?: ListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListGlobalKakaoPipelineCandidatesApiPipelinesRunsKakaoCandidatesGetQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Create Global Kakao Pipeline Run
+ */
+export const createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost = (
+    createKakaoPipelineRequest: CreateKakaoPipelineRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<PipelineRunSummary>(
+      {url: `/api/pipelines/runs/kakao-runs`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: createKakaoPipelineRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getCreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>, TError,{data: CreateKakaoPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>, TError,{data: CreateKakaoPipelineRequest}, TContext> => {
+
+const mutationKey = ['createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>, {data: CreateKakaoPipelineRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPostMutationResult = NonNullable<Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>>
+    export type CreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPostMutationBody = CreateKakaoPipelineRequest
+    export type CreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Create Global Kakao Pipeline Run
+ */
+export const useCreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>, TError,{data: CreateKakaoPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPost>>,
+        TError,
+        {data: CreateKakaoPipelineRequest},
+        TContext
+      > => {
+      return useMutation(getCreateGlobalKakaoPipelineRunApiPipelinesRunsKakaoRunsPostMutationOptions(options));
+    }
+
+/**
  * @summary List Pipeline Events
  */
 export const listPipelineEventsApiPipelinesRunsRunIdEventsGet = (
@@ -3366,6 +3529,141 @@ export const useCreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost =
         TContext
       > => {
       return useMutation(getCreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationOptions(options));
+    }
+
+/**
+ * @summary List Kakao Pipeline Candidates
+ */
+export const listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet = (
+    runId: string,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<KakaoPipelineCandidateList>(
+      {url: `/api/pipelines/runs/${runId}/kakao-candidates`, method: 'GET', signal
+    },
+      options);
+    }
+
+
+
+
+export const getListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryKey = (runId: string,) => {
+    return [
+    `/api/pipelines/runs/${runId}/kakao-candidates`
+    ] as const;
+    }
+
+
+export const getListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryOptions = <TData = Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>, TError = HTTPValidationError>(runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryKey(runId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>> = ({ signal }) => listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet(runId, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: runId !== null && runId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryResult = NonNullable<Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>>
+export type ListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary List Kakao Pipeline Candidates
+ */
+
+export function useListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet<TData = Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>, TError = HTTPValidationError>(
+ runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListKakaoPipelineCandidatesApiPipelinesRunsRunIdKakaoCandidatesGetQueryOptions(runId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Create Kakao Pipeline Run
+ */
+export const createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost = (
+    runId: string,
+    createKakaoPipelineRequest: CreateKakaoPipelineRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<PipelineRunSummary>(
+      {url: `/api/pipelines/runs/${runId}/kakao-runs`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: createKakaoPipelineRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getCreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>, TError,{runId: string;data: CreateKakaoPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>, TError,{runId: string;data: CreateKakaoPipelineRequest}, TContext> => {
+
+const mutationKey = ['createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>, {runId: string;data: CreateKakaoPipelineRequest}> = (props) => {
+          const {runId,data} = props ?? {};
+
+          return  createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost(runId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPostMutationResult = NonNullable<Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>>
+    export type CreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPostMutationBody = CreateKakaoPipelineRequest
+    export type CreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Create Kakao Pipeline Run
+ */
+export const useCreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>, TError,{runId: string;data: CreateKakaoPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPost>>,
+        TError,
+        {runId: string;data: CreateKakaoPipelineRequest},
+        TContext
+      > => {
+      return useMutation(getCreateKakaoPipelineRunApiPipelinesRunsRunIdKakaoRunsPostMutationOptions(options));
     }
 
 /**
@@ -3842,71 +4140,6 @@ export const useCheckKakaoEligibilityApiKakaoTasksCheckPost = <TError = HTTPVali
         TContext
       > => {
       return useMutation(getCheckKakaoEligibilityApiKakaoTasksCheckPostMutationOptions(options));
-    }
-
-/**
- * @summary Create Kakao Tasks
- */
-export const createKakaoTasksApiKakaoTasksCreatePost = (
-    kakaoCreateTasksRequest: KakaoCreateTasksRequest,
- options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
-) => {
-
-
-      return orvalRequest<KakaoCreateTasksResponse>(
-      {url: `/api/kakao/tasks/create`, method: 'POST',
-      headers: {'Content-Type': 'application/json', },
-      data: kakaoCreateTasksRequest, signal
-    },
-      options);
-    }
-
-
-
-
-export const getCreateKakaoTasksApiKakaoTasksCreatePostMutationOptions = <TError = HTTPValidationError,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>, TError,{data: KakaoCreateTasksRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
-): UseMutationOptions<Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>, TError,{data: KakaoCreateTasksRequest}, TContext> => {
-
-const mutationKey = ['createKakaoTasksApiKakaoTasksCreatePost'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>, {data: KakaoCreateTasksRequest}> = (props) => {
-          const {data} = props ?? {};
-
-          return  createKakaoTasksApiKakaoTasksCreatePost(data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type CreateKakaoTasksApiKakaoTasksCreatePostMutationResult = NonNullable<Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>>
-    export type CreateKakaoTasksApiKakaoTasksCreatePostMutationBody = KakaoCreateTasksRequest
-    export type CreateKakaoTasksApiKakaoTasksCreatePostMutationError = HTTPValidationError
-
-    /**
- * @summary Create Kakao Tasks
- */
-export const useCreateKakaoTasksApiKakaoTasksCreatePost = <TError = HTTPValidationError,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>, TError,{data: KakaoCreateTasksRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof createKakaoTasksApiKakaoTasksCreatePost>>,
-        TError,
-        {data: KakaoCreateTasksRequest},
-        TContext
-      > => {
-      return useMutation(getCreateKakaoTasksApiKakaoTasksCreatePostMutationOptions(options));
     }
 
 /**

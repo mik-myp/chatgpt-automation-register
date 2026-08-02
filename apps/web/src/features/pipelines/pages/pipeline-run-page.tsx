@@ -31,7 +31,9 @@ import {
 import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
 import { TableRefreshButton } from "@/components/table-refresh-button"
+import { CreateKakaoPipelineDialog } from "@/features/pipelines/components/create-kakao-dialog"
 import { CreateSecurityPipelineDialog } from "@/features/pipelines/components/create-security-dialog"
+import { KakaoTaskDetailDialog } from "@/features/pipelines/components/kakao-task-detail-dialog"
 import {
   CopySelectionBar,
   PlusStateBadge,
@@ -40,6 +42,7 @@ import {
 } from "@/features/pipelines/components/pipeline-ui"
 import {
   pipelineStatus,
+  PIPELINE_KIND_LABELS,
   type StrictPlusCheckResponse,
   TASK_STATUS_LABELS,
 } from "@/features/pipelines/lib/pipeline-state"
@@ -47,13 +50,6 @@ import { SecurityPipelineRunView } from "@/features/pipelines/pages/security-pip
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { isTerminalPaymentStatus, paymentStatusLabel } from "@/lib/kakao-status"
 import { Button } from "@workspace/ui/components/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@workspace/ui/components/dialog"
 import {
   Select,
   SelectContent,
@@ -118,6 +114,7 @@ export function PipelineRunPage() {
       queryKey: getListKakaoTasksApiKakaoTasksGetQueryKey(taskParams),
       enabled:
         Boolean(runId) && run.data?.kind !== PipelineRunKind.account_security,
+      refetchInterval: activeTab === "kakao" ? 3000 : false,
     },
   })
   const deliveries = useQuery({
@@ -333,6 +330,7 @@ export function PipelineRunPage() {
       />
     )
   }
+  const isKakao = data.kind === PipelineRunKind.kakao
 
   const selectedItems = data.items.filter((item) =>
     itemSelection.includes(item.id)
@@ -381,21 +379,31 @@ export function PipelineRunPage() {
           <h1 className="truncate font-mono text-base font-semibold">
             {data.id}
           </h1>
-          <StatusBadge className="mt-1" {...pipelineStatus(data)} />
-        </div>
-        {data.registered_count > 0 && (
-          <div className="ml-auto">
-            <CreateSecurityPipelineDialog sourceRunId={data.id} />
+          <div className="mt-1 flex items-center gap-1.5">
+            <StatusBadge
+              status={data.kind}
+              label={PIPELINE_KIND_LABELS[data.kind]}
+            />
+            <StatusBadge {...pipelineStatus(data)} />
           </div>
-        )}
+        </div>
+        {data.kind === PipelineRunKind.registration &&
+          data.registered_count > 0 && (
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              {!data.kakao_enabled && (
+                <CreateKakaoPipelineDialog sourceRunId={data.id} />
+              )}
+              <CreateSecurityPipelineDialog sourceRunId={data.id} />
+            </div>
+          )}
       </div>
 
       <div className="grid grid-cols-2 border-y bg-muted/20 sm:grid-cols-5">
         {[
           ["目标", data.target_count],
           ["已调度", data.scheduled_count],
-          ["注册成功", data.registered_count],
-          ["失败", data.failed_count],
+          [isKakao ? "账号完成" : "注册成功", data.registered_count],
+          [isKakao ? "未创建" : "失败", data.failed_count],
           ["Kakao 任务", data.kakao_task_count],
         ].map(([label, value], index) => (
           <div className={`px-4 py-4 ${index ? "border-l" : ""}`} key={label}>
@@ -414,7 +422,7 @@ export function PipelineRunPage() {
       >
         <TabsList className="w-full justify-start">
           <TabsTrigger className="shrink-0" value="items">
-            注册项
+            {isKakao ? "Kakao 账号" : "注册项"}
           </TabsTrigger>
           <TabsTrigger className="shrink-0" value="kakao">
             Kakao 任务
@@ -456,7 +464,7 @@ export function PipelineRunPage() {
               )}
               <TableRefreshButton
                 isRefreshing={run.isFetching}
-                label="刷新注册项"
+                label={isKakao ? "刷新 Kakao 账号" : "刷新注册项"}
                 onRefresh={() => void run.refetch()}
               />
             </div>
@@ -531,7 +539,7 @@ export function PipelineRunPage() {
                       className="h-40 text-center text-sm text-muted-foreground"
                       colSpan={7}
                     >
-                      本轮次暂无注册项
+                      {isKakao ? "本轮次暂无 Kakao 账号" : "本轮次暂无注册项"}
                     </TableCell>
                   </TableRow>
                 )}
@@ -1188,17 +1196,11 @@ export function PipelineRunPage() {
           />
         </TabsContent>
       </Tabs>
-      <Dialog open={taskDetailOpen} onOpenChange={setTaskDetailOpen}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Kakao 任务详情</DialogTitle>
-            <DialogDescription>上游返回的完整任务状态</DialogDescription>
-          </DialogHeader>
-          <pre className="overflow-auto rounded-sm bg-muted/40 p-3 font-mono text-xs break-all whitespace-pre-wrap">
-            {JSON.stringify(taskDetail.data, null, 2)}
-          </pre>
-        </DialogContent>
-      </Dialog>
+      <KakaoTaskDetailDialog
+        data={taskDetail.data}
+        open={taskDetailOpen}
+        onOpenChange={setTaskDetailOpen}
+      />
     </div>
   )
 }

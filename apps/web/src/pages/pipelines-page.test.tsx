@@ -9,6 +9,7 @@ import { type PipelineRunDetail } from "@/api/generated"
 import { CreateRegistrationDialog } from "@/features/pipelines/components/create-registration-dialog"
 import { apiClient } from "@/lib/api-client"
 
+import { CreateKakaoPipelineDialog } from "@/features/pipelines/components/create-kakao-dialog"
 import { CreateSecurityPipelineDialog } from "@/features/pipelines/components/create-security-dialog"
 import { SecurityPipelineRunView } from "@/features/pipelines/pages/security-pipeline-run-view"
 
@@ -141,6 +142,73 @@ describe("CreateSecurityPipelineDialog", () => {
 
     await waitFor(() => expect(mock.history.post).toHaveLength(1))
     expect(JSON.parse(mock.history.post[0]?.data as string)).toEqual({
+      emails: ["selected@example.com"],
+    })
+  })
+})
+
+describe("CreateKakaoPipelineDialog", () => {
+  it("checks card capacity before creating a Kakao pipeline", async () => {
+    const user = userEvent.setup()
+    mock.onGet("/api/pipelines/runs/kakao-candidates").reply(200, {
+      items: [
+        {
+          email: "selected@example.com",
+          eligibility_state: "eligible",
+          eligibility_error: null,
+          eligibility_checked_at: "2026-08-02T00:00:00Z",
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    })
+    mock.onPost("/api/kakao/cards/select").reply(200, {
+      slots: ["available-card"],
+      usage: [],
+    })
+    mock.onPost("/api/pipelines/runs/kakao-runs").reply(201, {
+      id: "kakao-run-id",
+      kind: "kakao",
+      source_pipeline_run_id: null,
+      status: "queued",
+      mode: "kakao",
+      target_count: 1,
+      kakao_enabled: true,
+      scheduled_count: 1,
+      registered_count: 0,
+      failed_count: 0,
+      kakao_task_count: 0,
+      started_at: null,
+      finished_at: null,
+      created_at: "2026-08-02T00:00:00Z",
+      updated_at: "2026-08-02T00:00:00Z",
+    })
+    renderWithClient(<CreateKakaoPipelineDialog />)
+
+    await user.click(screen.getByRole("button", { name: "创建 Kakao" }))
+    await user.click(
+      await screen.findByRole("checkbox", {
+        name: "选择 selected@example.com",
+      })
+    )
+    const createButton = await screen.findByRole("button", {
+      name: "创建 Kakao 流水线（1）",
+    })
+    await waitFor(() => expect(createButton).toBeEnabled())
+    await user.click(createButton)
+
+    await waitFor(() =>
+      expect(
+        mock.history.post.some((request) =>
+          request.url?.endsWith("/pipelines/runs/kakao-runs")
+        )
+      ).toBe(true)
+    )
+    const request = mock.history.post.find((value) =>
+      value.url?.endsWith("/pipelines/runs/kakao-runs")
+    )
+    expect(JSON.parse(request?.data as string)).toEqual({
       emails: ["selected@example.com"],
     })
   })

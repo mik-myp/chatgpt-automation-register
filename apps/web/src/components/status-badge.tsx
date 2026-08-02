@@ -23,6 +23,7 @@ const STATUS_TONES: Record<string, keyof typeof TONES> = {
   security_credentials: "success",
   registration: "info",
   account_security: "warning",
+  kakao: "info",
   running: "info",
   registering: "info",
   registered: "info",

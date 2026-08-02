@@ -59,21 +59,7 @@ class PipelineRepository:
         ]
         self.session.add_all(items)
         if card_slots:
-            counts = Counter(card_slots)
-            cards = {
-                card.code: card
-                for card in self.session.scalars(
-                    select(KakaoCard).where(KakaoCard.code.in_(counts))
-                )
-            }
-            self.session.add_all(
-                PipelineCardAllocation(
-                    pipeline_run_id=run.id,
-                    card_id=cards[code].id,
-                    allocated_count=count,
-                )
-                for code, count in counts.items()
-            )
+            self._reserve_cards(run.id, card_slots)
         self.session.add(
             Job(
                 kind="pipeline.run",
@@ -83,6 +69,59 @@ class PipelineRepository:
         )
         self.session.flush()
         return run
+
+    def create_kakao(
+        self,
+        *,
+        source_run_id: str | None,
+        emails: list[str],
+        card_slots: list[str],
+    ) -> PipelineRun:
+        run = PipelineRun(
+            kind=PipelineRunKind.KAKAO,
+            source_pipeline_run_id=source_run_id,
+            mode="kakao",
+            target_count=len(emails),
+            kakao_enabled=True,
+            config_snapshot={"action": "create_kakao_tasks"},
+            scheduled_count=len(emails),
+        )
+        self.session.add(run)
+        self.session.flush()
+        self.session.add_all(
+            PipelineItem(
+                pipeline_run_id=run.id,
+                position=position,
+                account_email=email,
+                card_code_snapshot=card_slots[position],
+            )
+            for position, email in enumerate(emails)
+        )
+        self._reserve_cards(run.id, card_slots)
+        self.session.add(
+            Job(
+                kind="pipeline.run",
+                payload={"pipeline_run_id": run.id},
+                max_attempts=3,
+            )
+        )
+        self.session.flush()
+        return run
+
+    def _reserve_cards(self, run_id: str, card_slots: list[str]) -> None:
+        counts = Counter(card_slots)
+        cards = {
+            card.code: card
+            for card in self.session.scalars(select(KakaoCard).where(KakaoCard.code.in_(counts)))
+        }
+        self.session.add_all(
+            PipelineCardAllocation(
+                pipeline_run_id=run_id,
+                card_id=cards[code].id,
+                allocated_count=count,
+            )
+            for code, count in counts.items()
+        )
 
     def create_security(
         self,
@@ -364,3 +403,49 @@ class PipelineRepository:
             )
         )
         return len(emails)
+
+    def retry_kakao_items(self, run_id: str, item_ids: list[str]) -> int:
+        run = self.get(run_id)
+        if run is None or run.kind != PipelineRunKind.KAKAO:
+            return 0
+        active_jobs = self.session.scalars(
+            select(Job).where(
+                Job.kind == "pipeline.run",
+                Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+            )
+        )
+        if any(job.payload.get("pipeline_run_id") == run_id for job in active_jobs):
+            return 0
+        claimed_ids = list(
+            self.session.scalars(
+                update(PipelineItem)
+                .where(
+                    PipelineItem.pipeline_run_id == run_id,
+                    PipelineItem.id.in_(item_ids),
+                    PipelineItem.status.in_(
+                        [PipelineItemStatus.FAILED, PipelineItemStatus.SKIPPED]
+                    ),
+                )
+                .values(
+                    status=PipelineItemStatus.SCHEDULED,
+                    error=None,
+                    eligibility_state=None,
+                )
+                .returning(PipelineItem.id)
+            )
+        )
+        if not claimed_ids:
+            return 0
+        run.status = PipelineStatus.QUEUED
+        run.finished_at = None
+        self.session.add(
+            Job(
+                kind="pipeline.run",
+                payload={
+                    "pipeline_run_id": run_id,
+                    "retry_item_ids": claimed_ids,
+                },
+                max_attempts=3,
+            )
+        )
+        return len(claimed_ids)

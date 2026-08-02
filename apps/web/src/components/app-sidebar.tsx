@@ -22,7 +22,6 @@ import {
 } from "@workspace/ui/components/sidebar"
 import {
   BoxesIcon,
-  CreditCardIcon,
   ChevronDownIcon,
   KeyRoundIcon,
   MailIcon,
@@ -36,7 +35,6 @@ const navigation = [
     items: [
       { title: "工作台", url: "/", icon: BoxesIcon },
       { title: "流水线轮次", url: "/pipelines", icon: WorkflowIcon },
-      { title: "Kakao 任务", url: "/kakao", icon: CreditCardIcon },
     ],
   },
   {

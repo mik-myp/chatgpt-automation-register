@@ -57,6 +57,7 @@ class PipelineItemSummary(BaseModel):
     position: int
     account_email: str | None
     registration_run_id: str | None
+    card_code_snapshot: str | None = None
     status: PipelineItemStatus
     eligibility_state: str | None
     password_status: str | None
@@ -137,6 +138,27 @@ class SecurityPipelineCandidatePage(SecurityPipelineCandidateList):
 
 
 class CreateSecurityPipelineRequest(BaseModel):
+    emails: list[str] = Field(min_length=1)
+
+
+class KakaoPipelineCandidate(BaseModel):
+    email: str
+    eligibility_state: str | None = None
+    eligibility_error: str | None = None
+    eligibility_checked_at: datetime | None = None
+
+
+class KakaoPipelineCandidateList(BaseModel):
+    items: list[KakaoPipelineCandidate]
+
+
+class KakaoPipelineCandidatePage(KakaoPipelineCandidateList):
+    total: int
+    limit: int
+    offset: int
+
+
+class CreateKakaoPipelineRequest(BaseModel):
     emails: list[str] = Field(min_length=1)
 
 

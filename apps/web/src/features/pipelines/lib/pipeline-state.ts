@@ -1,7 +1,14 @@
 import {
+  type PipelineRunKind,
   type PipelineRunSummary,
   type PipelineStatus as PipelineStatusType,
 } from "@/api/generated"
+
+export const PIPELINE_KIND_LABELS: Record<PipelineRunKind, string> = {
+  registration: "注册",
+  account_security: "安全处理",
+  kakao: "Kakao",
+}
 
 export const RUN_STATUS_LABELS: Record<PipelineStatusType, string> = {
   queued: "排队中",

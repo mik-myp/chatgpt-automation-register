@@ -60,12 +60,3 @@ class KakaoEligibilityItem(BaseModel):
 
 class KakaoEligibilityResponse(BaseModel):
     items: list[KakaoEligibilityItem]
-
-
-class KakaoCreateTasksRequest(BaseModel):
-    emails: list[str] = Field(min_length=1)
-
-
-class KakaoCreateTasksResponse(BaseModel):
-    created: int
-    duplicates: int

@@ -26,6 +26,7 @@ class PipelineStatus(StrEnum):
 class PipelineRunKind(StrEnum):
     REGISTRATION = "registration"
     ACCOUNT_SECURITY = "account_security"
+    KAKAO = "kakao"
 
 
 class PipelineItemStatus(StrEnum):

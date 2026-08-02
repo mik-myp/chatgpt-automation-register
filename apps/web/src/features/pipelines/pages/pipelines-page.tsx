@@ -17,6 +17,7 @@ import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
 import { TableRefreshButton } from "@/components/table-refresh-button"
 import { CreateRegistrationDialog } from "@/features/pipelines/components/create-registration-dialog"
+import { CreateKakaoPipelineDialog } from "@/features/pipelines/components/create-kakao-dialog"
 import { CreateSecurityPipelineDialog } from "@/features/pipelines/components/create-security-dialog"
 import {
   RowCheckbox,
@@ -24,6 +25,7 @@ import {
 } from "@/features/pipelines/components/pipeline-ui"
 import {
   pipelineStatus,
+  PIPELINE_KIND_LABELS,
   RUN_STATUS_LABELS,
 } from "@/features/pipelines/lib/pipeline-state"
 import { ApiError } from "@/lib/api-client"
@@ -149,6 +151,7 @@ export function PipelinesPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">流水线轮次</h1>
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <CreateKakaoPipelineDialog />
           <CreateSecurityPipelineDialog />
           <CreateRegistrationDialog
             defaultEmail={searchParams.get("email") ?? ""}
@@ -311,11 +314,7 @@ export function PipelinesPage() {
                   <TableCell>
                     <StatusBadge
                       status={run.kind}
-                      label={
-                        run.kind === PipelineRunKind.account_security
-                          ? "安全处理"
-                          : "注册"
-                      }
+                      label={PIPELINE_KIND_LABELS[run.kind]}
                     />
                   </TableCell>
                   <TableCell>
@@ -338,10 +337,18 @@ export function PipelinesPage() {
                   <TableCell className="text-right">
                     {run.kind === PipelineRunKind.registration &&
                       run.registered_count > 0 && (
-                        <CreateSecurityPipelineDialog
-                          iconOnly
-                          sourceRunId={run.id}
-                        />
+                        <>
+                          {!run.kakao_enabled && (
+                            <CreateKakaoPipelineDialog
+                              iconOnly
+                              sourceRunId={run.id}
+                            />
+                          )}
+                          <CreateSecurityPipelineDialog
+                            iconOnly
+                            sourceRunId={run.id}
+                          />
+                        </>
                       )}
                     {run.kind === PipelineRunKind.registration &&
                       (run.status === PipelineStatus.queued ||

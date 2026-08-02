@@ -14,7 +14,13 @@ from gpt_auto_register.db.models.kakao import (
     KakaoTask,
     PipelineCardAllocation,
 )
-from gpt_auto_register.db.models.pipeline import PipelineItem, PipelineRun, PipelineStatus
+from gpt_auto_register.db.models.pipeline import (
+    PipelineItem,
+    PipelineItemStatus,
+    PipelineRun,
+    PipelineRunKind,
+    PipelineStatus,
+)
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.kakao.client import KakaoClient
@@ -161,6 +167,86 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
         assert saved_credential.metadata_json["kakao_pipeline"]["active_duplicate_job_ids"] == [
             "duplicate-job"
         ]
+
+
+def test_kakao_pipeline_executes_existing_credentials(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "pipeline-kakao@example.com"
+    run = PipelineRun(
+        kind=PipelineRunKind.KAKAO,
+        target_count=1,
+        kakao_enabled=True,
+        config_snapshot={},
+        scheduled_count=1,
+    )
+    batch = KakaoCardBatch(name="kakao executor")
+    credential = Credential(email=email, access_token="access-token", metadata_json={})
+    job = Job(id="kakao-pipeline-job", kind="pipeline.run", payload={})
+    db_session.add_all(
+        [
+            run,
+            batch,
+            credential,
+            job,
+            AppSetting(
+                key="kakao",
+                value={"base_url": "https://kakao.example.com", "timeout": 30},
+            ),
+        ]
+    )
+    db_session.flush()
+    card = KakaoCard(batch_id=batch.id, code="pipeline-card", position=0)
+    item = PipelineItem(
+        pipeline_run_id=run.id,
+        position=0,
+        account_email=email,
+        card_code_snapshot=card.code,
+    )
+    db_session.add_all([card, item])
+    db_session.flush()
+    db_session.add(
+        PipelineCardAllocation(
+            pipeline_run_id=run.id,
+            card_id=card.id,
+            allocated_count=1,
+        )
+    )
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+    monkeypatch.setattr(
+        KakaoClient,
+        "check_eligibility",
+        lambda _self, _tokens: {
+            "items": [{"index": 0, "eligible": True, "state": "eligible"}]
+        },
+    )
+    monkeypatch.setattr(
+        KakaoClient,
+        "create_tasks",
+        lambda _self, **_kwargs: {
+            "tasks": [{"job_id": "pipeline-created-job", "status": "queued"}]
+        },
+    )
+
+    result = manager.PipelineExecutor(job.id, run.id).execute()
+
+    with factory() as session:
+        saved_run = session.get(PipelineRun, run.id)
+        saved_item = session.get(PipelineItem, item.id)
+        task = session.query(KakaoTask).one()
+        assert result["completed"] == 1
+        assert saved_run is not None
+        assert saved_run.status == PipelineStatus.COMPLETED
+        assert saved_run.registered_count == 1
+        assert saved_run.kakao_task_count == 1
+        assert saved_item is not None
+        assert saved_item.status == PipelineItemStatus.COMPLETED
+        assert task.pipeline_run_id == run.id
+        assert task.pipeline_item_id == item.id
 
 
 def test_invalid_state_retries_with_a_fresh_registration_process(

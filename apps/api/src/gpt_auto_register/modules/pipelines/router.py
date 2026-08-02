@@ -7,7 +7,13 @@ from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
 from gpt_auto_register.db.models.jobs import Job, JobStatus
-from gpt_auto_register.db.models.pipeline import PipelineRunKind, PipelineStatus
+from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
+from gpt_auto_register.db.models.pipeline import (
+    PipelineItem,
+    PipelineRun,
+    PipelineRunKind,
+    PipelineStatus,
+)
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import (
     CardAllocationError,
@@ -31,7 +37,11 @@ from gpt_auto_register.modules.pipelines.schemas import (
     CopyPipelineDeliveriesRequest,
     CopyPipelineDeliveriesResponse,
     CopySecurityCredentialsRequest,
+    CreateKakaoPipelineRequest,
     CreateSecurityPipelineRequest,
+    KakaoPipelineCandidate,
+    KakaoPipelineCandidateList,
+    KakaoPipelineCandidatePage,
     PipelineCardAllocationSummary,
     PipelineCardAssignmentSummary,
     PipelineDeliveryCopyMark,
@@ -112,6 +122,100 @@ def _busy_security_emails(db: DatabaseSession) -> set[str]:
         for email in job.payload.get("emails", [])
         if str(email).strip()
     }
+
+
+def _busy_kakao_emails(db: DatabaseSession) -> set[str]:
+    pipeline_emails = {
+        email
+        for email in db.scalars(
+            select(PipelineItem.account_email)
+            .join(PipelineRun, PipelineRun.id == PipelineItem.pipeline_run_id)
+            .where(
+                PipelineRun.kind == PipelineRunKind.KAKAO,
+                PipelineRun.status.in_(
+                    [PipelineStatus.QUEUED, PipelineStatus.RUNNING, PipelineStatus.PAUSED]
+                ),
+                PipelineItem.account_email.is_not(None),
+            )
+        )
+        if email
+    }
+    task_emails = set(
+        db.scalars(
+            select(KakaoTask.email).where(
+                KakaoTask.status.in_([KakaoTaskStatus.QUEUED, KakaoTaskStatus.EXTRACTING])
+            )
+        )
+    )
+    return pipeline_emails | task_emails
+
+
+def _kakao_candidate(credential: Credential) -> KakaoPipelineCandidate:
+    metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
+    pipeline = metadata.get("kakao_pipeline")
+    pipeline = pipeline if isinstance(pipeline, dict) else {}
+    return KakaoPipelineCandidate(
+        email=credential.email,
+        eligibility_state=(
+            str(metadata.get("kakao_state") or pipeline.get("state") or "") or None
+        ),
+        eligibility_error=(
+            str(metadata.get("kakao_error") or pipeline.get("error") or "") or None
+        ),
+        eligibility_checked_at=(
+            metadata.get("kakao_checked_at") or pipeline.get("checked_at") or None
+        ),
+    )
+
+
+def _eligible_kakao_accounts(
+    db: DatabaseSession,
+    requested: list[str],
+    *,
+    allowed_emails: set[str] | None = None,
+) -> list[str]:
+    credentials = AccountRepository(db).credentials(requested)
+    busy_emails = _busy_kakao_emails(db)
+    return [
+        email
+        for email in requested
+        if (credential := credentials.get(email)) is not None
+        and bool(credential.access_token)
+        and email not in busy_emails
+        and (allowed_emails is None or email in allowed_emails)
+    ]
+
+
+def _create_kakao_pipeline(
+    db: DatabaseSession,
+    requested: list[str],
+    *,
+    source_run_id: str | None = None,
+    allowed_emails: set[str] | None = None,
+) -> PipelineRunSummary:
+    eligible = _eligible_kakao_accounts(
+        db,
+        requested,
+        allowed_emails=allowed_emails,
+    )
+    if not eligible:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "所选账号正在其他 Kakao 轮次中、缺少 Access Token 或不属于来源轮次",
+        )
+    try:
+        with card_allocation_guard():
+            card_slots, _ = CardAllocator(db).select(len(eligible))
+            run = PipelineRepository(db).create_kakao(
+                source_run_id=source_run_id,
+                emails=eligible,
+                card_slots=card_slots,
+            )
+            db.commit()
+    except CardAllocationError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    db.refresh(run)
+    return PipelineRunSummary.model_validate(run)
 
 
 def _eligible_security_accounts(
@@ -316,6 +420,49 @@ def create_global_security_pipeline_run(
     return _create_security_pipeline(db, requested)
 
 
+@router.get("/kakao-candidates", response_model=KakaoPipelineCandidatePage)
+def list_global_kakao_pipeline_candidates(
+    db: DatabaseSession,
+    search: str = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> KakaoPipelineCandidatePage:
+    query = select(Credential).where(
+        Credential.access_token.is_not(None),
+        Credential.access_token != "",
+    )
+    if search.strip():
+        query = query.where(func.lower(Credential.email).like(f"%{search.strip().lower()}%"))
+    busy_emails = _busy_kakao_emails(db)
+    candidates = [
+        _kakao_candidate(credential)
+        for credential in db.scalars(query.order_by(Credential.email))
+        if credential.email not in busy_emails
+    ]
+    total = len(candidates)
+    return KakaoPipelineCandidatePage(
+        items=candidates[offset : offset + limit],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post(
+    "/kakao-runs",
+    response_model=PipelineRunSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_global_kakao_pipeline_run(
+    request: CreateKakaoPipelineRequest,
+    db: DatabaseSession,
+) -> PipelineRunSummary:
+    requested = list(
+        dict.fromkeys(email.strip().lower() for email in request.emails if email.strip())
+    )
+    return _create_kakao_pipeline(db, requested)
+
+
 @router.get("/{run_id}/events", response_model=PipelineEventListResponse)
 def list_pipeline_events(
     run_id: str,
@@ -357,11 +504,12 @@ def retry_pipeline_items(
     run = repository.get(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
-    processed = (
-        repository.retry_security_items(run_id, item_ids)
-        if run.kind == PipelineRunKind.ACCOUNT_SECURITY
-        else repository.retry_items(run_id, item_ids)
-    )
+    if run.kind == PipelineRunKind.ACCOUNT_SECURITY:
+        processed = repository.retry_security_items(run_id, item_ids)
+    elif run.kind == PipelineRunKind.KAKAO:
+        processed = repository.retry_kakao_items(run_id, item_ids)
+    else:
+        processed = repository.retry_items(run_id, item_ids)
     db.commit()
     return BulkPipelineResponse(processed=processed, skipped=len(item_ids) - processed)
 
@@ -424,6 +572,62 @@ def create_security_pipeline_run(
         str(item.account_email).lower() for item in repository.items(run_id) if item.account_email
     }
     return _create_security_pipeline(
+        db,
+        requested,
+        source_run_id=source.id,
+        allowed_emails=source_emails,
+    )
+
+
+@router.get(
+    "/{run_id}/kakao-candidates",
+    response_model=KakaoPipelineCandidateList,
+)
+def list_kakao_pipeline_candidates(
+    run_id: str,
+    db: DatabaseSession,
+) -> KakaoPipelineCandidateList:
+    repository = PipelineRepository(db)
+    run = repository.get(run_id)
+    if run is None or run.kind != PipelineRunKind.REGISTRATION:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "注册流水线轮次不存在")
+    emails = list(
+        dict.fromkeys(item.account_email for item in repository.items(run_id) if item.account_email)
+    )
+    credentials = AccountRepository(db).credentials(emails)
+    busy_emails = _busy_kakao_emails(db)
+    return KakaoPipelineCandidateList(
+        items=[
+            _kakao_candidate(credentials[email])
+            for email in emails
+            if email in credentials
+            and credentials[email].access_token
+            and email not in busy_emails
+        ]
+    )
+
+
+@router.post(
+    "/{run_id}/kakao-runs",
+    response_model=PipelineRunSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_kakao_pipeline_run(
+    run_id: str,
+    request: CreateKakaoPipelineRequest,
+    db: DatabaseSession,
+) -> PipelineRunSummary:
+    repository = PipelineRepository(db)
+    source = repository.get(run_id)
+    if source is None or source.kind != PipelineRunKind.REGISTRATION:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "注册流水线轮次不存在")
+    requested = list(
+        dict.fromkeys(email.strip().lower() for email in request.emails if email.strip())
+    )
+    source_emails = {
+        str(item.account_email).lower() for item in repository.items(run_id) if item.account_email
+    }
+    return _create_kakao_pipeline(
         db,
         requested,
         source_run_id=source.id,

@@ -7,12 +7,7 @@ from sqlalchemy import select
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
-from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, KakaoTaskStatus
-from gpt_auto_register.modules.cards.allocator import (
-    CardAllocationError,
-    CardAllocator,
-    card_allocation_guard,
-)
+from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
 from gpt_auto_register.modules.kakao.client import (
     KakaoApiError,
     KakaoClient,
@@ -21,8 +16,6 @@ from gpt_auto_register.modules.kakao.client import (
 )
 from gpt_auto_register.modules.kakao.repository import KakaoTaskRepository
 from gpt_auto_register.modules.kakao.schemas import (
-    KakaoCreateTasksRequest,
-    KakaoCreateTasksResponse,
     KakaoEligibilityItem,
     KakaoEligibilityRequest,
     KakaoEligibilityResponse,
@@ -36,7 +29,6 @@ from gpt_auto_register.modules.kakao.state import (
     apply_retry,
     apply_upstream,
     synchronized_kakao_state,
-    task_status,
 )
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.service import SettingsService
@@ -156,63 +148,6 @@ def check_kakao_eligibility(
             )
     db.commit()
     return KakaoEligibilityResponse(items=items)
-
-
-@router.post("/create", response_model=KakaoCreateTasksResponse)
-def create_kakao_tasks(
-    request: KakaoCreateTasksRequest,
-    db: DatabaseSession,
-) -> KakaoCreateTasksResponse:
-    emails = list(dict.fromkeys(email.strip().lower() for email in request.emails if email.strip()))
-    credentials = {
-        value.email: value
-        for value in db.scalars(select(Credential).where(Credential.email.in_(emails)))
-    }
-    if any(not credentials.get(email) or not credentials[email].access_token for email in emails):
-        raise HTTPException(status.HTTP_409_CONFLICT, "部分注册结果缺少 Access Token")
-    try:
-        with card_allocation_guard():
-            slots, _ = CardAllocator(db).select(len(emails))
-            client = _client(db)
-            settings = SettingsService(db).kakao_internal()
-            created = duplicates = 0
-            for email, card_code in zip(emails, slots, strict=True):
-                payload = client.create_tasks(
-                    card=card_code,
-                    access_tokens=[str(credentials[email].access_token)],
-                    plan_type=settings.plan_type,
-                    promo_code=settings.promo_code,
-                )
-                card = db.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
-                if card is None:
-                    continue
-                for value in payload_tasks(payload):
-                    upstream_id = str(value.get("job_id") or value.get("id") or "")
-                    if not upstream_id:
-                        continue
-                    existing = db.scalar(
-                        select(KakaoTask).where(KakaoTask.upstream_job_id == upstream_id)
-                    )
-                    if existing:
-                        duplicates += 1
-                        continue
-                    task = KakaoTask(
-                        upstream_job_id=upstream_id,
-                        card_id=card.id,
-                        card_code_snapshot=card.code,
-                        email=email,
-                        status=task_status(value.get("status")),
-                    )
-                    apply_upstream(task, value)
-                    db.add(task)
-                    created += 1
-            db.commit()
-        return KakaoCreateTasksResponse(created=created, duplicates=duplicates)
-    except (CardAllocationError, KakaoApiError) as error:
-        status_code = (
-            error.status_code if isinstance(error, KakaoApiError) else status.HTTP_409_CONFLICT
-        )
-        raise HTTPException(status_code, str(error)) from error
 
 
 @router.post("/sync", response_model=KakaoTaskActionResponse)

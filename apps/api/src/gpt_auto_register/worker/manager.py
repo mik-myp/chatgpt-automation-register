@@ -34,6 +34,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
     PipelineItemStatus,
     PipelineRun,
+    PipelineRunKind,
     PipelineStatus,
 )
 from gpt_auto_register.db.result import affected_rows
@@ -188,6 +189,9 @@ class PipelineExecutor:
             item_ids = list(session.scalars(item_query.order_by(PipelineItem.position)))
             session.commit()
 
+        if run.kind == PipelineRunKind.KAKAO:
+            return self._execute_kakao_pipeline(item_ids)
+
         _emit(self.job_id, "pipeline_started", "流水线开始执行")
         card_codes = self._allocate_cards(item_ids) if run.kakao_enabled else {}
         concurrency = max(1, min(50, int(registration.get("concurrency") or 10)))
@@ -258,6 +262,124 @@ class PipelineExecutor:
             data={"registered": success, "failed": failed},
         )
         return {"status": "completed", "registered": success, "failed": failed}
+
+    def _execute_kakao_pipeline(self, item_ids: list[str]) -> dict[str, Any]:
+        _emit(self.job_id, "pipeline_started", "Kakao 流水线开始执行")
+        card_codes = self._allocate_cards(item_ids)
+        with ThreadPoolExecutor(max_workers=min(10, len(item_ids) or 1)) as executor:
+            futures = {
+                executor.submit(
+                    self._execute_kakao_item,
+                    item_id,
+                    card_codes[item_id],
+                ): item_id
+                for item_id in item_ids
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as error:
+                    _emit(
+                        self.job_id,
+                        "kakao_item_failed",
+                        str(error),
+                        level="error",
+                        data={"item_id": futures[future]},
+                    )
+
+        with SessionLocal() as session:
+            run = session.get(PipelineRun, self.run_id)
+            if run is None:
+                raise RuntimeError("流水线轮次已被删除")
+            statuses = list(
+                session.scalars(
+                    select(PipelineItem.status).where(
+                        PipelineItem.pipeline_run_id == self.run_id
+                    )
+                )
+            )
+            completed = sum(value == PipelineItemStatus.COMPLETED for value in statuses)
+            skipped = sum(value == PipelineItemStatus.SKIPPED for value in statuses)
+            failed = sum(value == PipelineItemStatus.FAILED for value in statuses)
+            run.registered_count = completed
+            run.failed_count = failed + skipped
+            if run.status != PipelineStatus.CANCELED:
+                run.status = (
+                    PipelineStatus.FAILED
+                    if completed == 0 and failed + skipped > 0
+                    else PipelineStatus.COMPLETED
+                )
+                run.finished_at = utc_now()
+            created = run.kakao_task_count
+            session.commit()
+        _emit(
+            self.job_id,
+            "pipeline_finished",
+            f"Kakao 流水线执行完成：完成 {completed}，跳过 {skipped}，失败 {failed}",
+            data={
+                "completed": completed,
+                "skipped": skipped,
+                "failed": failed,
+                "tasks": created,
+            },
+        )
+        return {
+            "status": "completed",
+            "completed": completed,
+            "skipped": skipped,
+            "failed": failed,
+            "tasks": created,
+        }
+
+    def _execute_kakao_item(self, item_id: str, card_code: str) -> None:
+        if not self._wait_until_runnable():
+            return
+        with SessionLocal() as session:
+            item = session.get(PipelineItem, item_id)
+            if item is None or not item.account_email:
+                return
+            if item.status == PipelineItemStatus.COMPLETED:
+                return
+            credential = session.get(Credential, item.account_email)
+            if credential is None or not credential.access_token:
+                item.status = PipelineItemStatus.FAILED
+                item.error = "注册结果缺少 Access Token"
+                session.commit()
+                return
+            email = item.account_email
+            credential_value = {
+                "email": credential.email,
+                "access_token": credential.access_token,
+            }
+            item.status = PipelineItemStatus.SUBMITTING
+            item.error = None
+            session.commit()
+        try:
+            self._run_kakao(item_id, credential_value, card_code)
+        except Exception as error:
+            self._record_kakao_failure(card_code)
+            with SessionLocal() as session:
+                session.execute(
+                    update(PipelineItem)
+                    .where(
+                        PipelineItem.id == item_id,
+                        PipelineItem.pipeline_run_id.in_(
+                            select(PipelineRun.id).where(
+                                PipelineRun.id == self.run_id,
+                                PipelineRun.status != PipelineStatus.CANCELED,
+                            )
+                        ),
+                    )
+                    .values(status=PipelineItemStatus.FAILED, error=str(error))
+                )
+                session.commit()
+            _emit(
+                self.job_id,
+                "kakao_item_failed",
+                f"Kakao 任务提交失败 {email}: {error}",
+                level="error",
+                data={"item_id": item_id, "email": email},
+            )
 
     def _allocate_cards(self, item_ids: list[str]) -> dict[str, str]:
         with card_allocation_guard(), SessionLocal() as session:
@@ -813,6 +935,7 @@ class PipelineExecutor:
                                 "eligible": False,
                                 "state": eligibility_state,
                                 "error": eligibility_error,
+                                "checked_at": utc_now().isoformat(),
                                 "job_ids": [],
                                 "active_duplicate_job_ids": [],
                             },
@@ -909,6 +1032,7 @@ class PipelineExecutor:
                         "eligible": True,
                         "state": eligibility_state,
                         "error": "",
+                        "checked_at": utc_now().isoformat(),
                         "job_ids": task_ids,
                         "active_duplicate_job_ids": duplicate_ids,
                         "card_id": card.id,

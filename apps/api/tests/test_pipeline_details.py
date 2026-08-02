@@ -19,7 +19,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineStatus,
 )
 from gpt_auto_register.db.models.settings import AppSetting
-from gpt_auto_register.modules.cards.allocator import CardAllocationError
+from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
 from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
 
 
@@ -345,3 +345,110 @@ def test_create_global_security_pipeline_without_source_run(
     assert detail["items"][0]["account_email"] == "selected@example.com"
     assert detail["items"][0]["password_status"] == "not_set"
     assert detail["items"][0]["mfa_status"] == "not_enabled"
+
+
+def test_create_global_kakao_pipeline_reserves_cards(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "kakao-candidate@example.com"
+    batch = KakaoCardBatch(name="kakao pipeline")
+    db_session.add_all(
+        [
+            batch,
+            Credential(email=email, access_token="access-token", metadata_json={}),
+        ]
+    )
+    db_session.flush()
+    card = KakaoCard(batch_id=batch.id, code="KAKAO-PIPELINE-CARD", position=0)
+    db_session.add(card)
+    db_session.commit()
+    monkeypatch.setattr(
+        CardAllocator,
+        "select",
+        lambda _self, count: ([card.code] * count, []),
+    )
+
+    response = client.post(
+        "/api/pipelines/runs/kakao-runs",
+        json={"emails": [f" {email.upper()} "]},
+    )
+
+    assert response.status_code == 201
+    run = response.json()
+    assert run["kind"] == "kakao"
+    assert run["target_count"] == 1
+    assert run["kakao_enabled"] is True
+    detail = client.get(f"/api/pipelines/runs/{run['id']}").json()
+    assert detail["items"][0]["account_email"] == email
+    assert detail["items"][0]["card_code_snapshot"] == card.code
+    assert detail["cards"][0]["allocated_count"] == 1
+
+
+def test_create_global_kakao_pipeline_rejects_insufficient_capacity(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_session.add(
+        Credential(
+            email="capacity@example.com",
+            access_token="access-token",
+            metadata_json={},
+        )
+    )
+    db_session.commit()
+
+    def reject_capacity(_allocator: object, target_count: int) -> object:
+        raise CardAllocationError(f"卡密实时剩余次数只有 0，无法分配 {target_count} 个任务")
+
+    monkeypatch.setattr(CardAllocator, "select", reject_capacity)
+
+    response = client.post(
+        "/api/pipelines/runs/kakao-runs",
+        json={"emails": ["capacity@example.com"]},
+    )
+
+    assert response.status_code == 409
+    assert "无法分配 1 个任务" in response.json()["detail"]
+
+
+def test_kakao_candidates_exclude_accounts_in_active_kakao_runs(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    available = Credential(
+        email="available@example.com",
+        access_token="available-token",
+        metadata_json={"kakao_state": "eligible"},
+    )
+    busy = Credential(
+        email="busy@example.com",
+        access_token="busy-token",
+        metadata_json={},
+    )
+    run = PipelineRun(
+        kind=PipelineRunKind.KAKAO,
+        status=PipelineStatus.RUNNING,
+        mode="kakao",
+        target_count=1,
+        kakao_enabled=True,
+        scheduled_count=1,
+    )
+    db_session.add_all([available, busy, run])
+    db_session.flush()
+    db_session.add(
+        PipelineItem(
+            pipeline_run_id=run.id,
+            position=0,
+            account_email=busy.email,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/pipelines/runs/kakao-candidates")
+
+    assert response.status_code == 200
+    assert [item["email"] for item in response.json()["items"]] == [available.email]
+    assert response.json()["items"][0]["eligibility_state"] == "eligible"
