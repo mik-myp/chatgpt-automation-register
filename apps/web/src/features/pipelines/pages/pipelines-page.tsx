@@ -28,6 +28,10 @@ import {
   PIPELINE_KIND_LABELS,
   RUN_STATUS_LABELS,
 } from "@/features/pipelines/lib/pipeline-state"
+import {
+  PIPELINE_PAGE_SIZE,
+  pipelineListState,
+} from "@/features/pipelines/lib/pipeline-route-state"
 import { ApiError } from "@/lib/api-client"
 import { formatCompactBeijingDateTime } from "@/lib/date-time"
 import {
@@ -58,22 +62,25 @@ import {
 } from "@workspace/ui/components/table"
 
 export function PipelinesPage() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
-  const [status, setStatus] = useState<PipelineStatusType | "all">("all")
-  const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<string[]>([])
   const [deleteIds, setDeleteIds] = useState<string[]>([])
-  const pageSize = 50
-  const params = {
-    status: status === "all" ? undefined : status,
-    limit: pageSize,
-    offset: page * pageSize,
-  }
+  const { status, page, params } = pipelineListState(searchParams)
   const query = useListPipelineRunsApiPipelinesRunsGet(params, {
     query: {
       queryKey: getListPipelineRunsApiPipelinesRunsGetQueryKey(params),
-      refetchInterval: 2000,
+      refetchInterval: (current) => {
+        if (document.visibilityState === "hidden") return false
+        return current.state.data?.items.some(
+          (run) =>
+            run.status === PipelineStatus.queued ||
+            run.status === PipelineStatus.running ||
+            run.status === PipelineStatus.paused
+        )
+          ? 2000
+          : false
+      },
     },
   })
   const mutation = useBulkPipelineActionApiPipelinesRunsBatchPost<ApiError>({
@@ -144,7 +151,7 @@ export function PipelinesPage() {
     )
     .map((run) => run.id)
   const total = query.data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const pageCount = Math.max(1, Math.ceil(total / PIPELINE_PAGE_SIZE))
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
@@ -167,8 +174,13 @@ export function PipelinesPage() {
           <Select
             value={status}
             onValueChange={(value) => {
-              setStatus(value as typeof status)
-              setPage(0)
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current)
+                if (value === "all") next.delete("status")
+                else next.set("status", value)
+                next.delete("page")
+                return next
+              })
               setSelected([])
             }}
           >
@@ -455,7 +467,12 @@ export function PipelinesPage() {
           pageCount={pageCount}
           total={total}
           onPageChange={(value) => {
-            setPage(value)
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current)
+              if (value === 0) next.delete("page")
+              else next.set("page", String(value + 1))
+              return next
+            })
             setSelected([])
           }}
         />

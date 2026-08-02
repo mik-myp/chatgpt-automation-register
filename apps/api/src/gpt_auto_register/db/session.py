@@ -27,6 +27,7 @@ def configure_sqlite(connection: object, _connection_record: object) -> None:
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
+    settings.ensure_database_file_permissions()
 
 
 def get_db() -> Generator[Session, None, None]:

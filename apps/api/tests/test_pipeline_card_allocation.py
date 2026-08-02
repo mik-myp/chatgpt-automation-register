@@ -97,6 +97,40 @@ def test_first_registration_result_initializes_credential_metadata(
         assert credential.metadata_json["account_security"]["password"]["status"] == "set"
 
 
+def test_canceled_pipeline_does_not_persist_registration_result(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    email = "canceled@example.com"
+    run = PipelineRun(
+        status=PipelineStatus.CANCELED,
+        target_count=1,
+        kakao_enabled=False,
+        config_snapshot={},
+    )
+    account = OutlookAccount(email=email, status=AccountStatus.IN_USE)
+    db_session.add_all([run, account])
+    db_session.flush()
+    registration = RegistrationRun(email=email, config_snapshot={})
+    item = PipelineItem(
+        pipeline_run_id=run.id,
+        position=0,
+        account_email=email,
+    )
+    db_session.add_all([registration, item])
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+    manager.PipelineExecutor("unused", run.id)._save_registration_success(
+        item.id,
+        registration.id,
+        {"email": email, "password": "must-not-be-saved"},
+    )
+
+    with factory() as session:
+        assert session.get(Credential, email) is None
+
+
 def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -268,9 +302,7 @@ def test_kakao_pipeline_executes_existing_credentials(
     monkeypatch.setattr(
         KakaoClient,
         "check_eligibility",
-        lambda _self, _tokens: {
-            "items": [{"index": 0, "eligible": True, "state": "eligible"}]
-        },
+        lambda _self, _tokens: {"items": [{"index": 0, "eligible": True, "state": "eligible"}]},
     )
     monkeypatch.setattr(
         KakaoClient,

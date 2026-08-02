@@ -28,6 +28,9 @@ class Job(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     kind: Mapped[str] = mapped_column(String(64), index=True)
+    pipeline_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_runs.id", ondelete="SET NULL"), index=True
+    )
     status: Mapped[JobStatus] = mapped_column(
         enum_type(JobStatus, "job_status"),
         default=JobStatus.QUEUED,

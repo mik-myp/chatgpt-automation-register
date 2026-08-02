@@ -24,16 +24,15 @@ import {
   useGetPipelineRunApiPipelinesRunsRunIdGet,
   useListKakaoTasksApiKakaoTasksGet,
 } from "@/api/generated"
-import {
-  RuntimeEventLog,
-  type RuntimeEvent,
-} from "@/components/pipelines/runtime-event-log"
+import { RuntimeEventLog } from "@/components/pipelines/runtime-event-log"
 import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
 import { TableRefreshButton } from "@/components/table-refresh-button"
 import { CreateKakaoPipelineDialog } from "@/features/pipelines/components/create-kakao-dialog"
 import { CreateSecurityPipelineDialog } from "@/features/pipelines/components/create-security-dialog"
 import { KakaoTaskDetailDialog } from "@/features/pipelines/components/kakao-task-detail-dialog"
+import { usePipelineEvents } from "@/features/pipelines/hooks/use-pipeline-events"
+import { usePipelineRunRouteState } from "@/features/pipelines/hooks/use-pipeline-run-route-state"
 import {
   CopySelectionBar,
   PlusStateBadge,
@@ -75,34 +74,38 @@ import {
 export function PipelineRunPage() {
   const { runId = "" } = useParams()
   const pageSize = 50
-  const [itemPage, setItemPage] = useState(0)
-  const [taskPage, setTaskPage] = useState(0)
-  const [cardPage, setCardPage] = useState(0)
-  const [deliveryPage, setDeliveryPage] = useState(0)
-  const [activeTab, setActiveTab] = useState("items")
+  const {
+    activeTab,
+    setActiveTab,
+    itemPage,
+    setItemPage,
+    taskPage,
+    setTaskPage,
+    cardPage,
+    setCardPage,
+    deliveryPage,
+    setDeliveryPage,
+    taskStatus,
+    setTaskStatus,
+  } = usePipelineRunRouteState()
   const [itemSelection, setItemSelection] = useState<string[]>([])
   const [taskSelection, setTaskSelection] = useState<string[]>([])
   const [cardSelection, setCardSelection] = useState<string[]>([])
   const [deliverySelection, setDeliverySelection] = useState<string[]>([])
-  const [taskStatus, setTaskStatus] = useState<KakaoTaskStatus | "all">("all")
   const [taskDetailOpen, setTaskDetailOpen] = useState(false)
   const run = useGetPipelineRunApiPipelinesRunsRunIdGet(runId, {
     query: {
       queryKey: getGetPipelineRunApiPipelinesRunsRunIdGetQueryKey(runId),
-      refetchInterval: 2000,
+      refetchInterval: (current) => {
+        if (document.visibilityState === "hidden") return false
+        const status = current.state.data?.status
+        return status && ["queued", "running", "paused"].includes(status)
+          ? 2000
+          : false
+      },
     },
   })
-  const events = useQuery({
-    queryKey: ["/api/pipelines/runs", runId, "events"],
-    queryFn: () =>
-      apiRequest<{
-        items: RuntimeEvent[]
-        last_sequence: number
-        terminal: boolean
-      }>(`/api/pipelines/runs/${encodeURIComponent(runId)}/events?limit=500`),
-    enabled: Boolean(runId),
-    refetchInterval: (query) => (query.state.data?.terminal ? false : 1000),
-  })
+  const events = usePipelineEvents(runId)
   const taskParams = {
     pipeline_run_id: runId,
     status: taskStatus === "all" ? undefined : taskStatus,
@@ -114,7 +117,10 @@ export function PipelineRunPage() {
       queryKey: getListKakaoTasksApiKakaoTasksGetQueryKey(taskParams),
       enabled:
         Boolean(runId) && run.data?.kind !== PipelineRunKind.account_security,
-      refetchInterval: activeTab === "kakao" ? 3000 : false,
+      refetchInterval:
+        activeTab === "kakao" && document.visibilityState !== "hidden"
+          ? 3000
+          : false,
     },
   })
   const deliveries = useQuery({
@@ -130,7 +136,10 @@ export function PipelineRunPage() {
       ),
     enabled:
       Boolean(runId) && run.data?.kind !== PipelineRunKind.account_security,
-    refetchInterval: activeTab === "delivery" ? 3000 : false,
+    refetchInterval:
+      activeTab === "delivery" && document.visibilityState !== "hidden"
+        ? 3000
+        : false,
   })
   const hasActivePayment = (deliveries.data?.items ?? []).some(
     (item) =>
@@ -150,7 +159,7 @@ export function PipelineRunPage() {
       run.data?.kind !== PipelineRunKind.account_security &&
       activeTab === "delivery" &&
       hasActivePayment,
-    refetchInterval: 3000,
+    refetchInterval: document.visibilityState === "hidden" ? false : 3000,
   })
   const copyDeliveries = useMutation<
     {

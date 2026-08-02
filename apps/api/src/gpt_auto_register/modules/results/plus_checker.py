@@ -16,11 +16,7 @@ def _token_account_id(access_token: str) -> str:
     except (IndexError, ValueError, TypeError, json.JSONDecodeError):
         return ""
     auth = _mapping(payload.get("https://api.openai.com/auth"))
-    return str(
-        auth.get("chatgpt_account_id")
-        or payload.get("chatgpt_account_id")
-        or ""
-    )
+    return str(auth.get("chatgpt_account_id") or payload.get("chatgpt_account_id") or "")
 
 
 def _subscription_name(entitlement: dict[str, Any]) -> str:
@@ -50,9 +46,7 @@ def _select_account(
     token_account_id: str,
 ) -> tuple[str, dict[str, Any], str]:
     candidates = [
-        (str(key), _mapping(value))
-        for key, value in accounts.items()
-        if isinstance(value, dict)
+        (str(key), _mapping(value)) for key, value in accounts.items() if isinstance(value, dict)
     ]
     if token_account_id:
         for key, value in candidates:
@@ -213,7 +207,8 @@ def check_plus(access_token: str, proxy: str = "") -> dict[str, object]:
             "error": f"HTTP {response.status_code}",
         }
     try:
-        return _classify(response.json(), access_token)
+        payload: object = json.loads(response.text)
+        return _classify(payload, access_token)
     except (TypeError, ValueError) as error:
         return {
             "state": "unknown",

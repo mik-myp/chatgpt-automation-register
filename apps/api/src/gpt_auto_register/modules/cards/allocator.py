@@ -3,10 +3,12 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.kakao import KakaoCard, PipelineCardAllocation
 from gpt_auto_register.db.models.pipeline import PipelineRun, PipelineStatus
 from gpt_auto_register.modules.cards.repository import CardRepository
@@ -38,16 +40,26 @@ class CardUsage:
 
 
 class CardAllocator:
+    CACHE_TTL_SECONDS = 30
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def usage(self) -> list[CardUsage]:
-        return self._usage(CardRepository(self.session).active_cards())
+    def usage(self, *, force_refresh: bool = False) -> list[CardUsage]:
+        return self._usage(
+            CardRepository(self.session).active_cards(),
+            force_refresh=force_refresh,
+        )
 
     def inventory_usage(self) -> list[CardUsage]:
-        return self._usage(CardRepository(self.session).all_cards())
+        return self._usage(CardRepository(self.session).all_cards(), force_refresh=True)
 
-    def _usage(self, cards: list[KakaoCard]) -> list[CardUsage]:
+    def _usage(
+        self,
+        cards: list[KakaoCard],
+        *,
+        force_refresh: bool,
+    ) -> list[CardUsage]:
         settings = SettingsService(self.session).kakao_internal()
         if not settings.base_url:
             raise CardAllocationError("请先配置 Kakao Base URL")
@@ -56,18 +68,41 @@ class CardAllocator:
         except ValueError as error:
             raise CardAllocationError(str(error)) from error
 
-        workers = min(8, max(1, len(cards)))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            usages = list(
-                executor.map(
-                    lambda card: self._query_card(
-                        client,
-                        card,
-                        settings.card_usage_limit,
-                    ),
-                    cards,
+        repository = CardRepository(self.session)
+        cache = repository.usage_cache()
+        usages: list[CardUsage] = []
+        stale_cards: list[KakaoCard] = []
+        for card in cards:
+            cached = None if force_refresh else self._cached_usage(card, cache.get(card.id))
+            if cached is None:
+                stale_cards.append(card)
+            else:
+                usages.append(cached)
+
+        if stale_cards:
+            workers = min(8, max(1, len(stale_cards)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                refreshed = list(
+                    executor.map(
+                        lambda card: self._query_card(
+                            client,
+                            card,
+                            settings.card_usage_limit,
+                        ),
+                        stale_cards,
+                    )
                 )
-            )
+            usages.extend(refreshed)
+            checked_at = utc_now().isoformat()
+            for usage in refreshed:
+                cache[usage.card_id] = {
+                    "charged": usage.charged if usage.error is None else None,
+                    "pending": usage.pending if usage.error is None else None,
+                    "remaining": usage.remaining if usage.error is None else None,
+                    "error": usage.error,
+                    "checked_at": checked_at,
+                }
+            repository.save_usage_cache(cache)
         return sorted(
             usages,
             key=lambda usage: (
@@ -76,6 +111,30 @@ class CardAllocator:
                 usage.card_id,
             ),
         )
+
+    def _cached_usage(
+        self,
+        card: KakaoCard,
+        cached: dict[str, object] | None,
+    ) -> CardUsage | None:
+        if not cached:
+            return None
+        try:
+            checked_at = datetime.fromisoformat(str(cached["checked_at"]))
+            age = (utc_now() - checked_at).total_seconds()
+            if age < 0 or age > self.CACHE_TTL_SECONDS:
+                return None
+            error = str(cached.get("error") or "") or None
+            return CardUsage(
+                card_id=card.id,
+                code=card.code,
+                charged=int(str(cached.get("charged") or 0)),
+                pending=int(str(cached.get("pending") or 0)),
+                remaining=int(str(cached.get("remaining") or 0)),
+                error=error,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def select(self, target_count: int) -> tuple[list[str], list[CardUsage]]:
         usages = self.usage()

@@ -63,6 +63,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="pipeline.run",
+                pipeline_run_id=run.id,
                 payload={"pipeline_run_id": run.id},
                 max_attempts=3,
             )
@@ -101,6 +102,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="pipeline.run",
+                pipeline_run_id=run.id,
                 payload={"pipeline_run_id": run.id},
                 max_attempts=3,
             )
@@ -153,6 +155,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="account.security",
+                pipeline_run_id=run.id,
                 payload={
                     "action": "set_password_and_mfa",
                     "emails": emails,
@@ -226,18 +229,15 @@ class PipelineRepository:
             )
             .values(status=PipelineStatus.CANCELED, finished_at=now)
         )
-        jobs = self.session.scalars(
-            select(Job).where(
+        self.session.execute(
+            update(Job)
+            .where(
+                Job.pipeline_run_id.in_(run_ids),
                 Job.kind.in_(["pipeline.run", "account.security"]),
                 Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
             )
+            .values(status=JobStatus.CANCELED, finished_at=now)
         )
-        run_id_set = set(run_ids)
-        for job in jobs:
-            if job.payload.get("pipeline_run_id") not in run_id_set:
-                continue
-            job.status = JobStatus.CANCELED
-            job.finished_at = now
         return affected_rows(result)
 
     def delete_runs(self, run_ids: list[str]) -> int:
@@ -280,10 +280,11 @@ class PipelineRepository:
         return affected_rows(result)
 
     def events(self, run_id: str, after: int, limit: int) -> list[JobEvent]:
-        jobs = self.session.scalars(select(Job).order_by(Job.created_at.desc()))
-        job = next(
-            (value for value in jobs if value.payload.get("pipeline_run_id") == run_id),
-            None,
+        job = self.session.scalar(
+            select(Job)
+            .where(Job.pipeline_run_id == run_id)
+            .order_by(Job.created_at.desc())
+            .limit(1)
         )
         if job is None:
             return []
@@ -351,6 +352,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="pipeline.run",
+                pipeline_run_id=run_id,
                 payload={
                     "pipeline_run_id": run_id,
                     "retry_item_ids": [item.id for item in items],
@@ -364,13 +366,14 @@ class PipelineRepository:
         run = self.get(run_id)
         if run is None or run.kind != PipelineRunKind.ACCOUNT_SECURITY:
             return 0
-        active_jobs = self.session.scalars(
-            select(Job).where(
+        active_job = self.session.scalar(
+            select(Job.id).where(
+                Job.pipeline_run_id == run_id,
                 Job.kind == "account.security",
                 Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
             )
         )
-        if any(job.payload.get("pipeline_run_id") == run_id for job in active_jobs):
+        if active_job is not None:
             return 0
         items = list(
             self.session.scalars(
@@ -393,6 +396,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="account.security",
+                pipeline_run_id=run.id,
                 payload={
                     "action": "set_password_and_mfa",
                     "emails": emails,
@@ -408,13 +412,14 @@ class PipelineRepository:
         run = self.get(run_id)
         if run is None or run.kind != PipelineRunKind.KAKAO:
             return 0
-        active_jobs = self.session.scalars(
-            select(Job).where(
+        active_job = self.session.scalar(
+            select(Job.id).where(
+                Job.pipeline_run_id == run_id,
                 Job.kind == "pipeline.run",
                 Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
             )
         )
-        if any(job.payload.get("pipeline_run_id") == run_id for job in active_jobs):
+        if active_job is not None:
             return 0
         claimed_ids = list(
             self.session.scalars(
@@ -441,6 +446,7 @@ class PipelineRepository:
         self.session.add(
             Job(
                 kind="pipeline.run",
+                pipeline_run_id=run_id,
                 payload={
                     "pipeline_run_id": run_id,
                     "retry_item_ids": claimed_ids,

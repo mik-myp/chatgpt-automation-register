@@ -30,7 +30,8 @@ pnpm dev
 - OpenAPI：http://127.0.0.1:8000/docs
 
 API 启动前会自动执行 Alembic migration。数据库默认保存在
-`apps/api/data/gpt-auto-register.db`。
+`apps/api/data/gpt-auto-register.db`。SQLite 模式只允许启动一个 API Worker；第二个
+API 进程会在启动阶段明确报错，避免卡密分配和任务执行产生并发冲突。
 
 ## 常用命令
 
@@ -41,7 +42,11 @@ pnpm typecheck
 pnpm build
 pnpm api:migrate
 pnpm api:generate
+pnpm --filter web e2e
 ```
+
+首次运行浏览器测试前执行
+`pnpm --filter web exec playwright install chromium`。
 
 修改 FastAPI 路由或 Schema 后，在 API 运行期间执行 `pnpm api:generate`，更新前端的
 OpenAPI 类型和 React Query hooks。

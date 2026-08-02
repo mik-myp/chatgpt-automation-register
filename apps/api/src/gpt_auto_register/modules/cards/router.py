@@ -112,6 +112,7 @@ def select_cards(request: CardSelectionRequest, db: DatabaseSession) -> CardSele
         slots, usages = CardAllocator(db).select(request.target_count)
     except CardAllocationError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    db.commit()
     return CardSelectionResponse(
         slots=slots,
         usage=[CardUsageItem(**asdict(usage)) for usage in usages],

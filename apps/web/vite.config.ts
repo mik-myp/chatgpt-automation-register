@@ -8,6 +8,33 @@ import { defineConfig } from "vite"
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          includeDependenciesRecursively: false,
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules\/(react|react-dom|scheduler)\//,
+            },
+            {
+              name: "data-vendor",
+              test: /node_modules\/(@tanstack|axios|react-router|zustand)\//,
+            },
+            {
+              name: "ui-vendor",
+              test: /node_modules\/(@radix-ui|lucide-react|sonner)\//,
+            },
+            {
+              name: "vendor",
+              test: /node_modules/,
+            },
+          ],
+        },
+      },
+    },
+  },
   server: {
     host: "127.0.0.1",
     proxy: {
@@ -24,6 +51,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
   },
 })

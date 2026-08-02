@@ -1,9 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
-from gpt_auto_register.db.models.jobs import Job
+from gpt_auto_register.db.models.jobs import Job, JobEvent
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
@@ -20,6 +20,7 @@ from gpt_auto_register.db.models.pipeline import (
 )
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
+from gpt_auto_register.modules.pipelines import router as pipeline_router
 from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
 
 
@@ -61,6 +62,50 @@ def test_pipeline_detail_includes_snapshot_and_items(
     assert detail["config_snapshot"] == {"registration": {"concurrency": 1}}
     assert len(detail["items"]) == 1
     assert detail["cards"][0]["card_code"] == "FULL-CARD-CODE"
+
+
+def test_pipeline_event_stream_closes_after_terminal_event(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = PipelineRun(
+        status=PipelineStatus.COMPLETED,
+        target_count=1,
+        config_snapshot={},
+    )
+    db_session.add(run)
+    db_session.flush()
+    job = Job(
+        kind="pipeline.run",
+        pipeline_run_id=run.id,
+        status="succeeded",
+        payload={"pipeline_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        JobEvent(
+            job_id=job.id,
+            sequence=1,
+            event_type="pipeline_completed",
+            message="流水线已完成",
+            data={},
+        )
+    )
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(pipeline_router, "SessionLocal", factory)
+
+    with client.stream(
+        "GET",
+        f"/api/pipelines/runs/{run.id}/events/stream",
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"event_type":"pipeline_completed"' in body
+    assert '"terminal":true' in body
 
 
 def test_single_pipeline_preserves_requested_email(

@@ -29,7 +29,7 @@ def db_session() -> Generator[Session, None, None]:
 
 @pytest.fixture
 def client(db_session: Session) -> Generator[TestClient, None, None]:
-    application = create_app()
+    application = create_app(worker_enabled=False)
 
     def override_db() -> Generator[Session, None, None]:
         yield db_session

@@ -17,6 +17,7 @@ import {
   RowCheckbox,
   SelectionCheckbox,
 } from "@/features/pipelines/components/pipeline-ui"
+import { usePipelineRunRouteState } from "@/features/pipelines/hooks/use-pipeline-run-route-state"
 import {
   pipelineStatus,
   type StrictPlusCheckResponse,
@@ -51,9 +52,10 @@ export function SecurityPipelineRunView({
   refresh: () => void
   refreshing: boolean
 }) {
-  const [activeTab, setActiveTab] = useState("items")
+  const routeState = usePipelineRunRouteState()
+  const activeTab = routeState.activeTab === "events" ? "events" : "items"
   const [selected, setSelected] = useState<string[]>([])
-  const [page, setPage] = useState(0)
+  const page = routeState.itemPage
   const pageSize = 50
   const rows = data.items.slice(page * pageSize, (page + 1) * pageSize)
   const pageCount = Math.max(1, Math.ceil(data.items.length / pageSize))
@@ -209,7 +211,7 @@ export function SecurityPipelineRunView({
       <Tabs
         className="flex min-h-0 flex-1 flex-col"
         value={activeTab}
-        onValueChange={setActiveTab}
+        onValueChange={routeState.setActiveTab}
       >
         <TabsList className="w-full justify-start">
           <TabsTrigger value="items">安全处理账号</TabsTrigger>
@@ -387,7 +389,7 @@ export function SecurityPipelineRunView({
             pageCount={pageCount}
             total={data.items.length}
             onPageChange={(value) => {
-              setPage(value)
+              routeState.setItemPage(value)
               setSelected([])
             }}
           />

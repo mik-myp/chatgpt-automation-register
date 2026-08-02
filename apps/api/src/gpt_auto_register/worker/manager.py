@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import timedelta
-from typing import Any
+from typing import Any, TextIO
 
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.exc import IntegrityError
 
 from gpt_auto_register.core.config import get_settings
-from gpt_auto_register.core.redaction import redact_text, redact_value
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
     AccountStatus,
@@ -23,7 +23,7 @@ from gpt_auto_register.db.models.accounts import (
     RegistrationRun,
     RunStatus,
 )
-from gpt_auto_register.db.models.jobs import Job, JobEvent, JobStatus
+from gpt_auto_register.db.models.jobs import Job, JobStatus
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoTask,
@@ -49,9 +49,9 @@ from gpt_auto_register.modules.kakao.state import (
 )
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage
 from gpt_auto_register.modules.settings.service import SettingsService
-from gpt_auto_register.worker.runtime_gateway import runtime_call
-
-_EVENT_LOCK = threading.Lock()
+from gpt_auto_register.worker.cancellation import monitor_run_cancellation
+from gpt_auto_register.worker.runtime_gateway import RuntimeCanceledError
+from gpt_auto_register.worker.runtime_service import call_legacy_runtime, emit_event
 
 
 def _classify_error(message: str) -> str:
@@ -114,30 +114,14 @@ def _emit(
     level: str = "info",
     data: dict[str, Any] | None = None,
 ) -> None:
-    with _EVENT_LOCK:
-        for _ in range(5):
-            with SessionLocal() as session:
-                sequence = (
-                    session.scalar(
-                        select(func.max(JobEvent.sequence)).where(JobEvent.job_id == job_id)
-                    )
-                    or 0
-                ) + 1
-                session.add(
-                    JobEvent(
-                        job_id=job_id,
-                        sequence=sequence,
-                        level=level,
-                        event_type=event_type,
-                        message=redact_text(message, limit=4000),
-                        data=redact_value(data or {}),
-                    )
-                )
-                try:
-                    session.commit()
-                    return
-                except IntegrityError:
-                    session.rollback()
+    emit_event(
+        SessionLocal,
+        job_id,
+        event_type,
+        message,
+        level=level,
+        data=data,
+    )
 
 
 def _legacy_call(
@@ -145,12 +129,15 @@ def _legacy_call(
     timeout: int = 1800,
     *,
     job_id: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    max_lines = 2000
-    with SessionLocal() as session, suppress(Exception):
-        max_lines = SettingsService(session).maintenance_internal().max_runtime_log_lines
-    sink = (lambda line: _emit(job_id, "runtime_log", line, level="debug")) if job_id else None
-    return runtime_call(payload, timeout, log_sink=sink, max_lines=max_lines)
+    return call_legacy_runtime(
+        SessionLocal,
+        payload,
+        timeout,
+        job_id=job_id,
+        cancel_check=cancel_check,
+    )
 
 
 def _account_payload(account: OutlookAccount) -> dict[str, Any]:
@@ -165,12 +152,19 @@ def _account_payload(account: OutlookAccount) -> dict[str, Any]:
 
 
 class PipelineExecutor:
-    def __init__(self, job_id: str, run_id: str, item_ids: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        run_id: str,
+        item_ids: list[str] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         self.job_id = job_id
         self.run_id = run_id
         self.item_ids = item_ids
         self._failure_lock = threading.Lock()
         self._consecutive_network_failures = 0
+        self._cancel_event = cancel_event or threading.Event()
 
     def execute(self) -> dict[str, Any]:
         with SessionLocal() as session:
@@ -297,9 +291,7 @@ class PipelineExecutor:
                 raise RuntimeError("流水线轮次已被删除")
             statuses = list(
                 session.scalars(
-                    select(PipelineItem.status).where(
-                        PipelineItem.pipeline_run_id == self.run_id
-                    )
+                    select(PipelineItem.status).where(PipelineItem.pipeline_run_id == self.run_id)
                 )
             )
             completed = sum(value == PipelineItemStatus.COMPLETED for value in statuses)
@@ -466,6 +458,8 @@ class PipelineExecutor:
 
     def _wait_until_runnable(self) -> bool:
         while True:
+            if self._cancel_event.is_set():
+                return False
             with SessionLocal() as session:
                 run = session.get(PipelineRun, self.run_id)
                 if run is None or run.status == PipelineStatus.CANCELED:
@@ -561,6 +555,7 @@ class PipelineExecutor:
                         "mail": mail,
                     },
                     job_id=self.job_id,
+                    cancel_check=self._cancel_event.is_set,
                 )
                 error_message = str(result.get("error") or "")
                 if result.get("ok") or "invalid_state" not in error_message.lower():
@@ -595,6 +590,13 @@ class PipelineExecutor:
                 f"注册成功 {account_data['email']}",
                 data={"item_id": item_id, "email": account_data["email"]},
             )
+        except RuntimeCanceledError:
+            self._save_registration_canceled(
+                item_id,
+                registration_run.id,
+                account_data["email"],
+            )
+            return False
         except Exception as error:
             category = _classify_error(str(error))
             self._save_registration_failure(
@@ -786,7 +788,14 @@ class PipelineExecutor:
         with SessionLocal() as session:
             item = session.get(PipelineItem, item_id)
             registration_run = session.get(RegistrationRun, registration_run_id)
-            if item is None or registration_run is None:
+            run = session.get(PipelineRun, self.run_id)
+            if (
+                item is None
+                or registration_run is None
+                or run is None
+                or run.status == PipelineStatus.CANCELED
+                or self._cancel_event.is_set()
+            ):
                 return
             email = str(value.get("email") or item.account_email or "").lower()
             credential = session.get(Credential, email)
@@ -822,6 +831,28 @@ class PipelineExecutor:
                 account.failure_reason = None
             session.commit()
 
+    def _save_registration_canceled(
+        self,
+        item_id: str,
+        registration_run_id: str,
+        email: str,
+    ) -> None:
+        with SessionLocal() as session:
+            item = session.get(PipelineItem, item_id)
+            registration_run = session.get(RegistrationRun, registration_run_id)
+            account = session.get(OutlookAccount, email)
+            if item is not None:
+                item.status = PipelineItemStatus.SKIPPED
+                item.error = "流水线已取消"
+            if registration_run is not None:
+                registration_run.status = RunStatus.CANCELED
+                registration_run.error = "流水线已取消"
+                registration_run.finished_at = utc_now()
+            if account is not None and account.status == AccountStatus.IN_USE:
+                account.status = AccountStatus.AVAILABLE
+                account.claimed_at = None
+            session.commit()
+
     def _save_registration_failure(
         self,
         item_id: str,
@@ -829,6 +860,9 @@ class PipelineExecutor:
         email: str,
         message: str,
     ) -> None:
+        if self._cancel_event.is_set():
+            self._save_registration_canceled(item_id, registration_run_id, email)
+            return
         category = _classify_error(message)
         with SessionLocal() as session:
             item = session.get(PipelineItem, item_id)
@@ -862,6 +896,7 @@ class PipelineExecutor:
             {"action": "export", "credential": credential, "export": export},
             timeout=300,
             job_id=self.job_id,
+            cancel_check=self._cancel_event.is_set,
         )
         target_results = dict(result.get("results") or {})
         failed = any(
@@ -1071,11 +1106,17 @@ class PipelineExecutor:
 
 
 class AccountSecurityExecutor:
-    def __init__(self, job_id: str, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         self.job_id = job_id
         self.action = str(payload.get("action") or "")
         self.emails = [str(value).strip().lower() for value in payload.get("emails", [])]
         self.pipeline_run_id = str(payload.get("pipeline_run_id") or "")
+        self._cancel_event = cancel_event or threading.Event()
 
     def execute(self) -> dict[str, Any]:
         succeeded = failed = skipped = 0
@@ -1093,7 +1134,11 @@ class AccountSecurityExecutor:
                 else:
                     skipped += 1
                     item_skipped = True
+            except RuntimeCanceledError:
+                break
             except Exception as error:
+                if self._cancel_event.is_set():
+                    break
                 failed += 1
                 item_error = str(error)
                 _emit(
@@ -1127,6 +1172,8 @@ class AccountSecurityExecutor:
             session.commit()
 
     def _job_running(self) -> bool:
+        if self._cancel_event.is_set():
+            return False
         with SessionLocal() as session:
             job = session.get(Job, self.job_id)
             return job is not None and job.status == JobStatus.RUNNING
@@ -1300,6 +1347,8 @@ class AccountSecurityExecutor:
     def _execute_action(self, email: str, action: str) -> None:
         try:
             self._run_action(email, action)
+        except RuntimeCanceledError:
+            raise
         except Exception as error:
             self._record(email, action, "failed", str(error))
             raise
@@ -1354,6 +1403,7 @@ class AccountSecurityExecutor:
                 },
                 timeout=120,
                 job_id=self.job_id,
+                cancel_check=self._cancel_event.is_set,
             )
             if not result.get("verified"):
                 raise RuntimeError(str(result.get("error") or "MFA 状态验证失败"))
@@ -1374,7 +1424,10 @@ class AccountSecurityExecutor:
                 "mail": mail,
             },
             job_id=self.job_id,
+            cancel_check=self._cancel_event.is_set,
         )
+        if self._cancel_event.is_set():
+            raise RuntimeCanceledError("协议运行已取消")
         value = dict(result.get("credential") or {})
         self._persist_session(email, value)
         if not result.get("ok"):
@@ -1464,22 +1517,58 @@ class WorkerManager:
         self.worker_id = f"local-{os.getpid()}"
         self._next_kakao_sync = 0.0
         self._next_maintenance = 0.0
+        self._lock_file: TextIO | None = None
+
+    def _acquire_singleton_lock(self) -> bool:
+        settings = get_settings()
+        settings.ensure_runtime_directories()
+        lock_path = settings.runtime_data_path.parent / "worker.lock"
+        lock_file = lock_path.open("a+", encoding="utf-8")
+        lock_path.chmod(0o600)
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            return False
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        self._lock_file = lock_file
+        return True
+
+    def _release_singleton_lock(self) -> None:
+        if self._lock_file is None:
+            return
+        with suppress(OSError):
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+        self._lock_file.close()
+        self._lock_file = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        if not self._acquire_singleton_lock():
+            raise RuntimeError("本地数据库已由另一个 API 进程使用，请只启动一个 API Worker")
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop,
             daemon=True,
             name="pipeline-job-worker",
         )
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception:
+            self._thread = None
+            self._release_singleton_lock()
+            raise
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
+            self._thread = None
+        self._release_singleton_lock()
 
     def _claim(self) -> Job | None:
         now = utc_now()
@@ -1643,28 +1732,40 @@ class WorkerManager:
             )
             heartbeat.start()
             try:
-                if job.kind == "account.security":
-                    result = AccountSecurityExecutor(job.id, job.payload).execute()
-                    failed = int(result.get("failed") or 0)
-                    self._finish(
-                        job.id,
-                        result=result,
-                        error=f"{failed} 个账号安全操作失败" if failed else None,
+                run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
+                with monitor_run_cancellation(run_id, SessionLocal) as cancel_event:
+                    if job.kind == "account.security":
+                        result = AccountSecurityExecutor(
+                            job.id,
+                            job.payload,
+                            cancel_event,
+                        ).execute()
+                        failed = int(result.get("failed") or 0)
+                        self._finish(
+                            job.id,
+                            result=result,
+                            error=f"{failed} 个账号安全操作失败" if failed else None,
+                        )
+                        continue
+                    retry_item_ids = job.payload.get("retry_item_ids")
+                    item_ids = (
+                        [str(value) for value in retry_item_ids]
+                        if isinstance(retry_item_ids, list)
+                        else None
                     )
-                    continue
-                run_id = str(job.payload.get("pipeline_run_id") or "")
-                retry_item_ids = job.payload.get("retry_item_ids")
-                item_ids = (
-                    [str(value) for value in retry_item_ids]
-                    if isinstance(retry_item_ids, list)
-                    else None
-                )
-                result = PipelineExecutor(job.id, run_id, item_ids).execute()
-                self._finish(job.id, result=result)
+                    result = PipelineExecutor(
+                        job.id,
+                        run_id,
+                        item_ids,
+                        cancel_event,
+                    ).execute()
+                    self._finish(job.id, result=result)
+            except RuntimeCanceledError:
+                self._finish(job.id, result={"status": "canceled"})
             except Exception as error:
                 _emit(job.id, "pipeline_failed", str(error), level="error")
                 with SessionLocal() as session:
-                    run_id = str(job.payload.get("pipeline_run_id") or "")
+                    run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
                     run = session.get(PipelineRun, run_id)
                     if run is not None and run.status != PipelineStatus.CANCELED:
                         run.status = PipelineStatus.FAILED

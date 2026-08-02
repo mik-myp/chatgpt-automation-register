@@ -32,6 +32,11 @@ apps/api/data
 # turbo
 .turbo
 
+# Browser tests
+playwright-report
+test-results
+blob-report
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

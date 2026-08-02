@@ -1375,6 +1375,13 @@ after?: number;
 limit?: number;
 };
 
+export type StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetParams = {
+/**
+ * @minimum 0
+ */
+after?: number;
+};
+
 export type ListPipelineDeliveriesApiPipelinesRunsRunIdDeliveriesGetParams = {
 /**
  * @minimum 1
@@ -3318,6 +3325,80 @@ export function useListPipelineEventsApiPipelinesRunsRunIdEventsGet<TData = Awai
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getListPipelineEventsApiPipelinesRunsRunIdEventsGetQueryOptions(runId,params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Stream Pipeline Events
+ */
+export const streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet = (
+    runId: string,
+    params?: StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetParams,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<void>(
+      {url: `/api/pipelines/runs/${runId}/events/stream`, method: 'GET',
+        params, signal
+    },
+      options);
+    }
+
+
+
+
+export const getStreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryKey = (runId: string,
+    params?: StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetParams,) => {
+    return [
+    `/api/pipelines/runs/${runId}/events/stream`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getStreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryOptions = <TData = Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>, TError = HTTPValidationError>(runId: string,
+    params?: StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getStreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryKey(runId,params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>> = ({ signal }) => streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet(runId,params, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: runId !== null && runId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryResult = NonNullable<Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>>
+export type StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary Stream Pipeline Events
+ */
+
+export function useStreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet<TData = Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>, TError = HTTPValidationError>(
+ runId: string,
+    params?: StreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof streamPipelineEventsApiPipelinesRunsRunIdEventsStreamGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getStreamPipelineEventsApiPipelinesRunsRunIdEventsStreamGetQueryOptions(runId,params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

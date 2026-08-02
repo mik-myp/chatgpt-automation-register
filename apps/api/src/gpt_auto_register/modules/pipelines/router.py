@@ -1,12 +1,16 @@
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
-from gpt_auto_register.db.models.jobs import Job, JobStatus
+from gpt_auto_register.db.models.jobs import Job, JobEvent, JobStatus
 from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
 from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
@@ -14,6 +18,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineRunKind,
     PipelineStatus,
 )
+from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import (
     CardAllocationError,
@@ -21,6 +26,10 @@ from gpt_auto_register.modules.cards.allocator import (
     card_allocation_guard,
 )
 from gpt_auto_register.modules.kakao.state import completed_extraction_emails
+from gpt_auto_register.modules.pipelines.candidates import (
+    list_kakao_candidate_credentials,
+    list_security_candidate_credentials,
+)
 from gpt_auto_register.modules.pipelines.delivery import (
     account_copy_fingerprint,
     format_deliveries,
@@ -62,6 +71,18 @@ from gpt_auto_register.modules.pipelines.schemas import (
 from gpt_auto_register.modules.settings.service import SettingsService
 
 router = APIRouter(prefix="/pipelines/runs", tags=["pipeline-runs"])
+
+
+def _event_summary(event: JobEvent) -> PipelineEventSummary:
+    return PipelineEventSummary(
+        id=event.id,
+        sequence=event.sequence,
+        level=event.level,
+        event_type=event.event_type,
+        message=event.message,
+        data=event.data,
+        created_at=event.created_at,
+    )
 
 
 def _fixed_password(db: DatabaseSession) -> str:
@@ -159,12 +180,8 @@ def _kakao_candidate(credential: Credential) -> KakaoPipelineCandidate:
     pipeline = pipeline if isinstance(pipeline, dict) else {}
     return KakaoPipelineCandidate(
         email=credential.email,
-        eligibility_state=(
-            str(metadata.get("kakao_state") or pipeline.get("state") or "") or None
-        ),
-        eligibility_error=(
-            str(metadata.get("kakao_error") or pipeline.get("error") or "") or None
-        ),
+        eligibility_state=(str(metadata.get("kakao_state") or pipeline.get("state") or "") or None),
+        eligibility_error=(str(metadata.get("kakao_error") or pipeline.get("error") or "") or None),
         eligibility_checked_at=(
             metadata.get("kakao_checked_at") or pipeline.get("checked_at") or None
         ),
@@ -379,24 +396,21 @@ def list_global_security_pipeline_candidates(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> SecurityPipelineCandidatePage:
-    query = select(Credential).join(
-        OutlookAccount,
-        OutlookAccount.email == Credential.email,
-    )
-    if search.strip():
-        query = query.where(func.lower(Credential.email).like(f"%{search.strip().lower()}%"))
-    credentials = list(db.scalars(query.order_by(Credential.email)))
     busy_emails = _busy_security_emails(db)
     fixed_password = _fixed_password(db)
+    credentials, total = list_security_candidate_credentials(
+        db,
+        busy_emails=busy_emails,
+        fixed_password_available=bool(fixed_password),
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
     candidates: list[SecurityPipelineCandidate] = []
     for credential in credentials:
-        if credential.email in busy_emails:
-            continue
         password_status, mfa_status, error, needs_password, needs_mfa = _security_state(
             credential, fixed_password
         )
-        if not needs_password and not needs_mfa:
-            continue
         candidates.append(
             SecurityPipelineCandidate(
                 email=credential.email,
@@ -407,9 +421,8 @@ def list_global_security_pipeline_candidates(
                 needs_mfa=needs_mfa,
             )
         )
-    total = len(candidates)
     return SecurityPipelineCandidatePage(
-        items=candidates[offset : offset + limit],
+        items=candidates,
         total=total,
         limit=limit,
         offset=offset,
@@ -438,26 +451,17 @@ def list_global_kakao_pipeline_candidates(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> KakaoPipelineCandidatePage:
-    query = select(Credential).where(
-        Credential.access_token.is_not(None),
-        Credential.access_token != "",
-    )
-    if search.strip():
-        query = query.where(func.lower(Credential.email).like(f"%{search.strip().lower()}%"))
-    credentials = list(db.scalars(query.order_by(Credential.email)))
     busy_emails = _busy_kakao_emails(db)
-    completed_emails = completed_extraction_emails(
-        db, (credential.email for credential in credentials)
+    credentials, total = list_kakao_candidate_credentials(
+        db,
+        busy_emails=busy_emails,
+        search=search,
+        limit=limit,
+        offset=offset,
     )
-    candidates = [
-        _kakao_candidate(credential)
-        for credential in credentials
-        if credential.email.strip().lower() not in busy_emails
-        and credential.email.strip().lower() not in completed_emails
-    ]
-    total = len(candidates)
+    candidates = [_kakao_candidate(credential) for credential in credentials]
     return KakaoPipelineCandidatePage(
-        items=candidates[offset : offset + limit],
+        items=candidates,
         total=total,
         limit=limit,
         offset=offset,
@@ -491,21 +495,70 @@ def list_pipeline_events(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
     events = PipelineRepository(db).events(run_id, after, limit)
     return PipelineEventListResponse(
-        items=[
-            PipelineEventSummary(
-                id=event.id,
-                sequence=event.sequence,
-                level=event.level,
-                event_type=event.event_type,
-                message=event.message,
-                data=event.data,
-                created_at=event.created_at,
-            )
-            for event in events
-        ],
+        items=[_event_summary(event) for event in events],
         last_sequence=events[-1].sequence if events else after,
         terminal=run.status
         in {PipelineStatus.COMPLETED, PipelineStatus.FAILED, PipelineStatus.CANCELED},
+    )
+
+
+@router.get("/{run_id}/events/stream", response_class=StreamingResponse)
+def stream_pipeline_events(
+    run_id: str,
+    request: Request,
+    db: DatabaseSession,
+    after: Annotated[int, Query(ge=0)] = 0,
+) -> StreamingResponse:
+    if PipelineRepository(db).get(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+
+    async def stream() -> AsyncIterator[str]:
+        sequence = after
+        idle_ticks = 0
+        while not await request.is_disconnected():
+            with SessionLocal() as session:
+                repository = PipelineRepository(session)
+                run = repository.get(run_id)
+                if run is None:
+                    return
+                events = repository.events(run_id, sequence, 200)
+                terminal = run.status in {
+                    PipelineStatus.COMPLETED,
+                    PipelineStatus.FAILED,
+                    PipelineStatus.CANCELED,
+                }
+                summaries = [_event_summary(event).model_dump(mode="json") for event in events]
+            if summaries:
+                idle_ticks = 0
+                for index, summary in enumerate(summaries):
+                    sequence = int(summary["sequence"])
+                    payload = {
+                        "event": summary,
+                        "terminal": terminal and index == len(summaries) - 1,
+                    }
+                    encoded = json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    yield (f"id: {sequence}\ndata: {encoded}\n\n")
+            elif terminal:
+                yield 'data: {"terminal":true}\n\n'
+            else:
+                idle_ticks += 1
+                if idle_ticks % 30 == 0:
+                    yield ": keep-alive\n\n"
+            if terminal:
+                return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
