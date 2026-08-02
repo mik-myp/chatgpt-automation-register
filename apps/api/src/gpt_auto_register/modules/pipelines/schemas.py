@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gpt_auto_register.db.models.kakao import KakaoTaskStatus
 from gpt_auto_register.db.models.pipeline import PipelineItemStatus, PipelineStatus
 
 
@@ -59,7 +60,7 @@ class PipelineItemSummary(BaseModel):
 
 class PipelineCardAllocationSummary(BaseModel):
     card_id: str
-    card_hint: str
+    card_code: str
     allocated_count: int
     created_count: int
     duplicate_count: int
@@ -106,3 +107,37 @@ class PipelineEventListResponse(BaseModel):
     items: list[PipelineEventSummary]
     last_sequence: int
     terminal: bool
+
+
+class PipelineDeliverySummary(BaseModel):
+    task_id: str
+    upstream_job_id: str
+    email: str
+    task_status: KakaoTaskStatus
+    payment_status: str | None
+    payment_message: str | None
+    payment_url: str | None
+    payment_expires_at: datetime | None
+    card_charged: bool | None
+    mail_url: str | None
+    chatgpt_password: str | None
+    totp_secret: str | None
+    deliverable: bool
+
+
+class PipelineDeliveryListResponse(BaseModel):
+    items: list[PipelineDeliverySummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class CopyPipelineDeliveriesRequest(BaseModel):
+    task_ids: list[str] = Field(default_factory=list)
+    all_deliverable: bool = False
+
+
+class CopyPipelineDeliveriesResponse(BaseModel):
+    text: str
+    copied: int
+    skipped: int

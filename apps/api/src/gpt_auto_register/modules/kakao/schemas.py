@@ -16,6 +16,10 @@ class KakaoTaskSummary(BaseModel):
     email: str
     status: KakaoTaskStatus
     payment_status: str | None
+    payment_message: str | None
+    payment_expires_at: datetime | None
+    payment_scanned: bool | None
+    payment_successful: bool | None
     card_charged: bool | None
     payment_url: str | None
     error: str | None

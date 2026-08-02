@@ -14,7 +14,7 @@ from gpt_auto_register.db.models.kakao import (
     KakaoTask,
     PipelineCardAllocation,
 )
-from gpt_auto_register.db.models.pipeline import PipelineItem, PipelineRun
+from gpt_auto_register.db.models.pipeline import PipelineItem, PipelineRun, PipelineStatus
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.kakao.client import KakaoClient
@@ -161,3 +161,74 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
         assert saved_credential.metadata_json["kakao_pipeline"]["active_duplicate_job_ids"] == [
             "duplicate-job"
         ]
+
+
+def test_invalid_state_retries_with_a_fresh_registration_process(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    email = "retry@example.com"
+    run = PipelineRun(
+        target_count=1,
+        kakao_enabled=False,
+        config_snapshot={"registration": {"concurrency": 1}},
+    )
+    account = OutlookAccount(email=email, status=AccountStatus.AVAILABLE)
+    job = Job(id="retry-job", kind="pipeline.run", payload={})
+    db_session.add_all([run, account, job])
+    db_session.flush()
+    db_session.add(PipelineItem(pipeline_run_id=run.id, position=0))
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+    attempts = 0
+
+    def register(_payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return {"ok": False, "error": "invalid_state"}
+        return {"ok": True, "credential": {"email": email, "access_token": "token"}}
+
+    monkeypatch.setattr(manager, "_legacy_call", register)
+
+    result = manager.PipelineExecutor(job.id, run.id).execute()
+
+    with factory() as session:
+        saved_run = session.get(PipelineRun, run.id)
+        assert saved_run is not None
+        assert attempts == 3
+        assert result["registered"] == 1
+        assert saved_run.status == PipelineStatus.COMPLETED
+
+
+def test_pipeline_is_failed_when_every_registration_fails(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    email = "failed@example.com"
+    run = PipelineRun(
+        target_count=1,
+        kakao_enabled=False,
+        config_snapshot={"registration": {"concurrency": 1}},
+    )
+    account = OutlookAccount(email=email, status=AccountStatus.AVAILABLE)
+    job = Job(id="failed-job", kind="pipeline.run", payload={})
+    db_session.add_all([run, account, job])
+    db_session.flush()
+    db_session.add(PipelineItem(pipeline_run_id=run.id, position=0))
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+    monkeypatch.setattr(
+        manager,
+        "_legacy_call",
+        lambda _payload, **_kwargs: {"ok": False, "error": "registration rejected"},
+    )
+
+    manager.PipelineExecutor(job.id, run.id).execute()
+
+    with factory() as session:
+        saved_run = session.get(PipelineRun, run.id)
+        assert saved_run is not None
+        assert saved_run.status == PipelineStatus.FAILED
+        assert saved_run.failed_count == 1

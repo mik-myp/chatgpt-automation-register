@@ -40,6 +40,7 @@ from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
+from gpt_auto_register.modules.kakao.state import apply_upstream
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.legacy_runner import RESULT_PREFIX
 
@@ -272,7 +273,11 @@ class PipelineExecutor:
             run.registered_count = total_registered
             run.failed_count = total_failed
             if run.status != PipelineStatus.CANCELED:
-                run.status = PipelineStatus.COMPLETED
+                run.status = (
+                    PipelineStatus.FAILED
+                    if total_registered == 0 and total_failed > 0
+                    else PipelineStatus.COMPLETED
+                )
                 run.finished_at = utc_now()
             session.commit()
         _emit(
@@ -408,16 +413,30 @@ class PipelineExecutor:
             data={"item_id": item_id, "email": account_data["email"]},
         )
         try:
-            result = _legacy_call(
-                {
-                    "action": "register",
-                    "account": account_data,
-                    "registration": item_config,
-                    "sms": sms,
-                    "mail": mail,
-                },
-                job_id=self.job_id,
-            )
+            result: dict[str, Any] = {}
+            for attempt in range(3):
+                result = _legacy_call(
+                    {
+                        "action": "register",
+                        "account": account_data,
+                        "registration": item_config,
+                        "sms": sms,
+                        "mail": mail,
+                    },
+                    job_id=self.job_id,
+                )
+                error_message = str(result.get("error") or "")
+                if result.get("ok") or "invalid_state" not in error_message.lower():
+                    break
+                if attempt < 2:
+                    _emit(
+                        self.job_id,
+                        "registration_retry",
+                        f"注册会话失效，正在使用全新会话重试（{attempt + 1}/2）",
+                        level="warning",
+                        data={"item_id": item_id, "email": account_data["email"]},
+                    )
+                    time.sleep(attempt + 1)
             if not result.get("ok"):
                 trace = str(result.get("traceback") or "").strip()
                 if trace:
@@ -789,30 +808,19 @@ class PipelineExecutor:
                 upstream_id = str(task.get("job_id") or task.get("id") or "")
                 if not upstream_id:
                     continue
-                status_value = str(task.get("status") or "queued").lower()
-                try:
-                    task_status = KakaoTaskStatus(status_value)
-                except ValueError:
-                    task_status = KakaoTaskStatus.QUEUED
                 existing = session.scalar(
                     select(KakaoTask).where(KakaoTask.upstream_job_id == upstream_id)
                 )
                 if existing is None:
-                    session.add(
-                        KakaoTask(
-                            upstream_job_id=upstream_id,
-                            pipeline_run_id=self.run_id,
-                            pipeline_item_id=item_id,
-                            card_id=card.id,
-                            email=item.account_email or "",
-                            status=task_status,
-                            payment_status=task.get("payment_status"),
-                            card_charged=task.get("card_charged"),
-                            payment_url=task.get("payment_url"),
-                            error=task.get("error"),
-                            upstream_payload=task,
-                        )
+                    saved_task = KakaoTask(
+                        upstream_job_id=upstream_id,
+                        pipeline_run_id=self.run_id,
+                        pipeline_item_id=item_id,
+                        card_id=card.id,
+                        email=item.account_email or "",
                     )
+                    apply_upstream(saved_task, task)
+                    session.add(saved_task)
             allocation = session.get(
                 PipelineCardAllocation,
                 (self.run_id, card.id),
@@ -891,7 +899,6 @@ class AccountSecurityExecutor:
                 return
             registration = SettingsService(session).registration_internal().model_dump()
             registration.update(password_mode="none", enable_authenticator_mfa=True)
-            sms = SettingsService(session).sms_internal()
             mail = SettingsService(session).mail_internal()
             account_data = _account_payload(account)
             credential_data = {
@@ -927,10 +934,10 @@ class AccountSecurityExecutor:
             return
         result = _legacy_call(
             {
-                "action": "register",
+                "action": "enable_mfa",
                 "account": account_data,
+                "credential": credential_data,
                 "registration": registration,
-                "sms": sms,
                 "mail": mail,
             },
             job_id=self.job_id,
@@ -1117,24 +1124,14 @@ class WorkerManager:
                     value = by_id.get(task.upstream_job_id)
                     if value is None:
                         continue
-                    status_value = str(value.get("status") or "queued").lower()
-                    try:
-                        task.status = KakaoTaskStatus(status_value)
-                    except ValueError:
-                        task.status = KakaoTaskStatus.QUEUED
-                    task.payment_status = str(value.get("payment_status") or "") or None
-                    charged = value.get("card_charged")
-                    task.card_charged = charged if isinstance(charged, bool) else None
-                    task.payment_url = str(value.get("payment_url") or "") or None
-                    task.error = str(value.get("error") or "") or None
-                    task.upstream_payload = value
+                    apply_upstream(task, value)
             session.commit()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             now = time.monotonic()
             if now >= self._next_kakao_sync:
-                self._next_kakao_sync = now + 15
+                self._next_kakao_sync = now + 5
                 with suppress(Exception):
                     self._sync_kakao_tasks()
             job = self._claim()

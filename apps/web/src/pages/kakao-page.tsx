@@ -1,6 +1,6 @@
 import { useDeferredValue, useState } from "react"
 import { Link } from "react-router"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import {
   Ban,
   ChevronRight,
@@ -16,12 +16,13 @@ import { toast } from "sonner"
 
 import {
   KakaoTaskStatus,
+  getListKakaoTasksApiKakaoTasksGetQueryKey,
   type KakaoTaskStatus as KakaoTaskStatusType,
   useListKakaoTasksApiKakaoTasksGet,
 } from "@/api/generated"
 import { TablePagination } from "@/components/table-pagination"
 import { ApiError, apiRequest } from "@/lib/api-client"
-import { Badge } from "@workspace/ui/components/badge"
+import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import {
@@ -68,14 +69,43 @@ export function KakaoPage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const deferredSearch = useDeferredValue(search.trim())
   const deferredPayment = useDeferredValue(paymentStatus.trim())
-  const tasks = useListKakaoTasksApiKakaoTasksGet({
+  const taskParams = {
     search: deferredSearch || undefined,
     status: status === "all" ? undefined : status,
     payment_status: deferredPayment || undefined,
     limit: pageSize,
     offset: page * pageSize,
+  }
+  const tasks = useListKakaoTasksApiKakaoTasksGet(taskParams, {
+    query: {
+      queryKey: getListKakaoTasksApiKakaoTasksGetQueryKey(taskParams),
+      refetchInterval: 5000,
+    },
   })
   const rows = tasks.data?.items ?? []
+  const activePaymentIds = rows
+    .filter(
+      (task) =>
+        task.status === "done" &&
+        Boolean(task.payment_url) &&
+        !["succeeded", "failed", "canceled", "expired"].includes(
+          task.payment_status ?? ""
+        )
+    )
+    .map((task) => task.id)
+  useQuery({
+    queryKey: ["/api/kakao/tasks/payment-sync", activePaymentIds],
+    queryFn: async () => {
+      const result = await apiRequest<{ processed: number; failed: number }>(
+        "/api/kakao/tasks/payment-sync",
+        { method: "POST", data: { task_ids: activePaymentIds } }
+      )
+      await tasks.refetch()
+      return result
+    },
+    enabled: activePaymentIds.length > 0,
+    refetchInterval: 3000,
+  })
   const ids = rows.map((task) => task.id)
   const selectedOnPage = ids.filter((id) => selected.includes(id)).length
   const pageCount = Math.max(1, Math.ceil((tasks.data?.total ?? 0) / pageSize))
@@ -295,11 +325,27 @@ export function KakaoPage() {
                     {task.upstream_job_id}
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline">
-                      {STATUS_LABELS[task.status]}
-                    </Badge>
+                    <StatusBadge
+                      status={task.status}
+                      label={STATUS_LABELS[task.status]}
+                    />
                   </TableCell>
-                  <TableCell>{task.payment_status ?? "-"}</TableCell>
+                  <TableCell>
+                    <StatusBadge
+                      status={task.payment_status}
+                      label={
+                        {
+                          ready: "等待扫码",
+                          waiting: "等待扫码",
+                          opened: "已扫码",
+                          succeeded: "支付成功",
+                          failed: "支付失败",
+                          canceled: "已取消",
+                          expired: "已过期",
+                        }[task.payment_status ?? ""] ?? "未知"
+                      }
+                    />
+                  </TableCell>
                   <TableCell>
                     {task.card_charged == null
                       ? "-"

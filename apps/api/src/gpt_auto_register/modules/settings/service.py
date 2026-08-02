@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.settings.schemas import (
+    DeliveryCopySettings,
     ExportSettings,
     ExportSettingsUpdate,
     ExportTargetSettings,
@@ -44,6 +45,9 @@ class SettingsService:
         )
         sms_value = self._value("sms", {})
         export_value = self._value("export", {})
+        delivery_copy = DeliveryCopySettings.model_validate(
+            self._value("delivery_copy", DeliveryCopySettings().model_dump())
+        )
         sms = SmsSettings(
             **{key: value for key, value in sms_value.items() if key != "api_key"},
             api_key_configured=bool(sms_value.get("api_key")),
@@ -59,6 +63,7 @@ class SettingsService:
             kakao=kakao,
             sms=sms,
             export=export,
+            delivery_copy=delivery_copy,
         )
 
     def update(self, values: SystemSettingsUpdate) -> SystemSettingsResponse:
@@ -76,6 +81,7 @@ class SettingsService:
         self._set("kakao", values.kakao.model_dump())
         self._set("sms", self._merge_sms(values.sms, current_sms), sensitive=True)
         self._set("export", self._merge_export(values.export, current_export), sensitive=True)
+        self._set("delivery_copy", values.delivery_copy.model_dump())
         self.session.commit()
         return self.get()
 

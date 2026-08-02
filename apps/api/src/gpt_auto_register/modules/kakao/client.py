@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -100,14 +102,10 @@ class KakaoClient:
         return self.request("GET", f"api/kakao-link/tasks/{quote(job_id, safe='')}")
 
     def cancel_task(self, job_id: str) -> object:
-        return self.request(
-            "POST", f"api/kakao-link/tasks/{quote(job_id, safe='')}/cancel"
-        )
+        return self.request("POST", f"api/kakao-link/tasks/{quote(job_id, safe='')}/cancel")
 
     def retry_task(self, job_id: str) -> object:
-        return self.request(
-            "POST", f"api/kakao-link/tasks/{quote(job_id, safe='')}/retry"
-        )
+        return self.request("POST", f"api/kakao-link/tasks/{quote(job_id, safe='')}/retry")
 
     def kakao_status(self, job_id: str) -> object:
         return self.request("GET", f"api/kakao-status/{quote(job_id, safe='')}")
@@ -120,11 +118,7 @@ class KakaoClient:
             batch = payload_tasks(self.list_tasks(card, page=page, page_size=page_size))
             added = 0
             for index, task in enumerate(batch):
-                identity = str(
-                    task.get("job_id")
-                    or task.get("id")
-                    or f"{page}:{index}:{task!r}"
-                )
+                identity = str(task.get("job_id") or task.get("id") or f"{page}:{index}:{task!r}")
                 if identity in seen:
                     continue
                 seen.add(identity)
@@ -152,3 +146,64 @@ def payload_tasks(payload: object) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             items.extend(payload_tasks(value))
     return items
+
+
+def canonical_payment_url(value: Mapping[str, Any]) -> str:
+    for key in (
+        "nicepay_checkout_url",
+        "kakao_pay_url",
+        "provider_redirect_url",
+        "long_url",
+        "link",
+        "payment_url",
+    ):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def normalized_payment_state(value: Mapping[str, Any]) -> dict[str, Any]:
+    state: Mapping[str, Any] = value
+    for key in ("kakao_status", "payment"):
+        nested = state.get(key)
+        if isinstance(nested, dict):
+            state = nested
+    raw_status = str(state.get("status") or state.get("raw_status") or "").upper()
+    expired = state.get("expired") is True
+    redirect_failed = state.get("need_redirect_fail_url") is True
+    successful = state.get("successful") is True or raw_status in {
+        "AUTHENTICATED",
+        "COMPLETED",
+    }
+    scanned = state.get("scanned") is True or raw_status in {
+        "OPENED",
+        "AUTHENTICATED",
+        "COMPLETED",
+    }
+    if expired or raw_status == "EXPIRED":
+        status = "expired"
+    elif redirect_failed or raw_status == "FAILED":
+        status = "failed"
+    elif raw_status == "CANCELED":
+        status = "canceled"
+    elif successful:
+        status = "succeeded"
+    elif scanned:
+        status = "opened"
+    elif raw_status == "READY":
+        status = "ready"
+    else:
+        outcome = str(state.get("outcome") or "").lower()
+        status = outcome if outcome in {"waiting", "failed", "canceled", "expired"} else ""
+    expires_at = None
+    expires_value = state.get("qr_expires_at") or value.get("kakao_qr_expires_at")
+    if isinstance(expires_value, (int, float)):
+        expires_at = datetime.fromtimestamp(expires_value, UTC)
+    return {
+        "status": status,
+        "message": str(state.get("message") or "").strip(),
+        "expires_at": expires_at,
+        "scanned": scanned,
+        "successful": successful,
+    }

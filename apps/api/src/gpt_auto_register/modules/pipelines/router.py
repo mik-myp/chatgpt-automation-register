@@ -4,12 +4,16 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.models.pipeline import PipelineStatus
+from gpt_auto_register.modules.pipelines.delivery import format_deliveries, list_deliveries
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.pipelines.schemas import (
     BulkPipelineAction,
     BulkPipelineRequest,
     BulkPipelineResponse,
+    CopyPipelineDeliveriesRequest,
+    CopyPipelineDeliveriesResponse,
     PipelineCardAllocationSummary,
+    PipelineDeliveryListResponse,
     PipelineEventListResponse,
     PipelineEventSummary,
     PipelineItemSummary,
@@ -22,12 +26,6 @@ from gpt_auto_register.modules.pipelines.schemas import (
 from gpt_auto_register.modules.settings.service import SettingsService
 
 router = APIRouter(prefix="/pipelines/runs", tags=["pipeline-runs"])
-
-
-def _card_hint(code: str) -> str:
-    if len(code) <= 8:
-        return "*" * len(code)
-    return f"{code[:4]}...{code[-4:]}"
 
 
 @router.get("", response_model=PipelineRunListResponse)
@@ -141,6 +139,43 @@ def retry_pipeline_items(
     return BulkPipelineResponse(processed=processed, skipped=len(item_ids) - processed)
 
 
+@router.get("/{run_id}/deliveries", response_model=PipelineDeliveryListResponse)
+def list_pipeline_deliveries(
+    run_id: str,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PipelineDeliveryListResponse:
+    if PipelineRepository(db).get(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+    page = list_deliveries(db, run_id, limit=limit, offset=offset)
+    return PipelineDeliveryListResponse(
+        items=page.items,
+        total=page.total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/{run_id}/deliveries/copy", response_model=CopyPipelineDeliveriesResponse)
+def copy_pipeline_deliveries(
+    run_id: str,
+    request: CopyPipelineDeliveriesRequest,
+    db: DatabaseSession,
+) -> CopyPipelineDeliveriesResponse:
+    if PipelineRepository(db).get(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
+    task_ids = None if request.all_deliverable else list(dict.fromkeys(request.task_ids))
+    if task_ids == []:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择要复制的交付信息")
+    page = list_deliveries(db, run_id, task_ids=task_ids)
+    text, copied, skipped = format_deliveries(
+        page.items,
+        SettingsService(db).get().delivery_copy,
+    )
+    return CopyPipelineDeliveriesResponse(text=text, copied=copied, skipped=skipped)
+
+
 @router.get("/{run_id}", response_model=PipelineRunDetail)
 def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
     repository = PipelineRepository(db)
@@ -151,7 +186,7 @@ def get_pipeline_run(run_id: str, db: DatabaseSession) -> PipelineRunDetail:
     cards = [
         PipelineCardAllocationSummary(
             card_id=allocation.card_id,
-            card_hint=_card_hint(code),
+            card_code=code,
             allocated_count=allocation.allocated_count,
             created_count=allocation.created_count,
             duplicate_count=allocation.duplicate_count,

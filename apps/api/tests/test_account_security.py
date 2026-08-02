@@ -87,7 +87,7 @@ def test_security_outcome_enrolls_and_activates_totp_without_logging_secrets(
     outcome = security_outcome(
         flow,
         FakeMail(),
-        {"set_password": True, "enable_authenticator_mfa": True, "otp_timeout": 180},
+        {"set_password": True, "enable_authenticator_mfa": True, "mfa_otp_timeout": 180},
     )
 
     assert outcome["password"]["status"] == "set"
@@ -120,7 +120,7 @@ def test_security_outcome_records_mfa_failure_without_secret() -> None:
     outcome = security_outcome(
         flow,
         FakeMail(),
-        {"set_password": True, "enable_authenticator_mfa": True, "otp_timeout": 180},
+        {"set_password": True, "enable_authenticator_mfa": True, "mfa_otp_timeout": 180},
     )
 
     assert outcome["mfa"]["status"] == "failed"

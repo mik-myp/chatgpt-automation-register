@@ -33,7 +33,7 @@ import {
 } from "@/api/generated"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { TablePagination } from "@/components/table-pagination"
-import { Badge } from "@workspace/ui/components/badge"
+import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import {
@@ -376,9 +376,10 @@ export function CardsPage() {
                     </TableCell>
                     <TableCell className="text-xs">{card.batch_name}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {card.active ? "已启用" : "已停用"}
-                      </Badge>
+                      <StatusBadge
+                        status={card.active ? "enabled" : "canceled"}
+                        label={card.active ? "已启用" : "已停用"}
+                      />
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {card.run_count}

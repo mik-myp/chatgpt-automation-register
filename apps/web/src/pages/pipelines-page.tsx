@@ -31,10 +31,11 @@ import {
   useGetSettingsApiSettingsGet,
   useListKakaoTasksApiKakaoTasksGet,
   useListPipelineRunsApiPipelinesRunsGet,
+  type PipelineDeliverySummary,
 } from "@/api/generated"
 import { ApiError, apiRequest } from "@/lib/api-client"
+import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
-import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import {
@@ -79,6 +80,15 @@ const RUN_STATUS_LABELS: Record<PipelineStatusType, string> = {
   completed: "已完成",
   failed: "失败",
   canceled: "已取消",
+}
+
+function pipelineStatus(run: PipelineRunSummary) {
+  if (run.status === "completed" && run.failed_count > 0) {
+    return run.registered_count > 0
+      ? { status: "partial", label: "部分成功" }
+      : { status: "failed", label: "失败" }
+  }
+  return { status: run.status, label: RUN_STATUS_LABELS[run.status] }
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -551,9 +561,7 @@ export function PipelinesPage() {
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline">
-                      {RUN_STATUS_LABELS[run.status]}
-                    </Badge>
+                    <StatusBadge {...pipelineStatus(run)} />
                   </TableCell>
                   <TableCell className="tabular-nums">
                     {run.target_count}
@@ -671,9 +679,12 @@ export function PipelineRunPage() {
   const [itemPage, setItemPage] = useState(0)
   const [taskPage, setTaskPage] = useState(0)
   const [cardPage, setCardPage] = useState(0)
+  const [deliveryPage, setDeliveryPage] = useState(0)
+  const [activeTab, setActiveTab] = useState("items")
   const [itemSelection, setItemSelection] = useState<string[]>([])
   const [taskSelection, setTaskSelection] = useState<string[]>([])
   const [cardSelection, setCardSelection] = useState<string[]>([])
+  const [deliverySelection, setDeliverySelection] = useState<string[]>([])
   const [taskStatus, setTaskStatus] = useState<KakaoTaskStatus | "all">("all")
   const [taskDetailOpen, setTaskDetailOpen] = useState(false)
   const run = useGetPipelineRunApiPipelinesRunsRunIdGet(runId, {
@@ -712,6 +723,64 @@ export function PipelineRunPage() {
       queryKey: getListKakaoTasksApiKakaoTasksGetQueryKey(taskParams),
       enabled: Boolean(runId),
     },
+  })
+  const deliveries = useQuery({
+    queryKey: ["/api/pipelines/runs", runId, "deliveries", deliveryPage],
+    queryFn: () =>
+      apiRequest<{
+        items: PipelineDeliverySummary[]
+        total: number
+        limit: number
+        offset: number
+      }>(
+        `/api/pipelines/runs/${encodeURIComponent(runId)}/deliveries?limit=${pageSize}&offset=${deliveryPage * pageSize}`
+      ),
+    enabled: Boolean(runId),
+    refetchInterval: activeTab === "delivery" ? 3000 : false,
+  })
+  const hasActivePayment = (deliveries.data?.items ?? []).some(
+    (item) =>
+      item.task_status === "done" &&
+      Boolean(item.payment_url) &&
+      !["succeeded", "failed", "canceled", "expired"].includes(
+        item.payment_status ?? ""
+      )
+  )
+  useQuery({
+    queryKey: ["/api/kakao/tasks/payment-sync", runId],
+    queryFn: () =>
+      apiRequest<{ processed: number; failed: number }>(
+        "/api/kakao/tasks/payment-sync",
+        { method: "POST", data: { task_ids: [], pipeline_run_id: runId } }
+      ),
+    enabled: Boolean(runId) && activeTab === "delivery" && hasActivePayment,
+    refetchInterval: 3000,
+  })
+  const copyDeliveries = useMutation<
+    { text: string; copied: number; skipped: number },
+    ApiError,
+    { taskIds?: string[]; all?: boolean }
+  >({
+    mutationFn: ({ taskIds = [], all = false }) =>
+      apiRequest(
+        `/api/pipelines/runs/${encodeURIComponent(runId)}/deliveries/copy`,
+        {
+          method: "POST",
+          data: { task_ids: taskIds, all_deliverable: all },
+        }
+      ),
+    onSuccess: async (result) => {
+      if (!result.copied) {
+        toast.error("没有可复制的交付信息")
+        return
+      }
+      await navigator.clipboard.writeText(result.text)
+      setDeliverySelection([])
+      toast.success(
+        `已复制 ${result.copied} 条交付信息${result.skipped ? `，跳过 ${result.skipped} 条` : ""}`
+      )
+    },
+    onError: (error) => toast.error(error.message),
   })
   const taskAction = useMutation<
     { processed: number; failed?: number },
@@ -801,6 +870,7 @@ export function PipelineRunPage() {
   const selectedCards = data.cards.filter((card) =>
     cardSelection.includes(card.card_id)
   )
+  const deliveryRows = deliveries.data?.items ?? []
   const itemRows = data.items.slice(
     itemPage * pageSize,
     (itemPage + 1) * pageSize
@@ -816,6 +886,10 @@ export function PipelineRunPage() {
     Math.ceil((tasks.data?.total ?? 0) / pageSize)
   )
   const cardPageCount = Math.max(1, Math.ceil(data.cards.length / pageSize))
+  const deliveryPageCount = Math.max(
+    1,
+    Math.ceil((deliveries.data?.total ?? 0) / pageSize)
+  )
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
@@ -834,9 +908,7 @@ export function PipelineRunPage() {
           <h1 className="truncate font-mono text-base font-semibold">
             {data.id}
           </h1>
-          <Badge className="mt-1" variant="outline">
-            {RUN_STATUS_LABELS[data.status]}
-          </Badge>
+          <StatusBadge className="mt-1" {...pipelineStatus(data)} />
         </div>
       </div>
 
@@ -857,12 +929,27 @@ export function PipelineRunPage() {
         ))}
       </div>
 
-      <Tabs className="flex min-h-0 flex-1 flex-col" defaultValue="items">
-        <TabsList>
-          <TabsTrigger value="items">注册项</TabsTrigger>
-          <TabsTrigger value="kakao">Kakao 任务</TabsTrigger>
-          <TabsTrigger value="cards">卡密分配</TabsTrigger>
-          <TabsTrigger value="events">运行日志</TabsTrigger>
+      <Tabs
+        className="flex min-h-0 flex-1 flex-col"
+        value={activeTab}
+        onValueChange={setActiveTab}
+      >
+        <TabsList className="w-full justify-start overflow-x-auto">
+          <TabsTrigger className="shrink-0" value="items">
+            注册项
+          </TabsTrigger>
+          <TabsTrigger className="shrink-0" value="kakao">
+            Kakao 任务
+          </TabsTrigger>
+          <TabsTrigger className="shrink-0" value="delivery">
+            交付信息
+          </TabsTrigger>
+          <TabsTrigger className="shrink-0" value="cards">
+            卡密分配
+          </TabsTrigger>
+          <TabsTrigger className="shrink-0" value="events">
+            运行日志
+          </TabsTrigger>
         </TabsList>
         <TabsContent
           value="items"
@@ -925,9 +1012,10 @@ export function PipelineRunPage() {
                       {item.account_email ?? "-"}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {TASK_STATUS_LABELS[item.status]}
-                      </Badge>
+                      <StatusBadge
+                        status={item.status}
+                        label={TASK_STATUS_LABELS[item.status]}
+                      />
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {item.eligibility_state ?? "-"}
@@ -1078,12 +1166,26 @@ export function PipelineRunPage() {
                       {task.upstream_job_id}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {TASK_STATUS_LABELS[task.status]}
-                      </Badge>
+                      <StatusBadge
+                        status={task.status}
+                        label={TASK_STATUS_LABELS[task.status]}
+                      />
                     </TableCell>
-                    <TableCell className="text-xs">
-                      {task.payment_status ?? "-"}
+                    <TableCell>
+                      <StatusBadge
+                        status={task.payment_status}
+                        label={
+                          {
+                            ready: "等待扫码",
+                            waiting: "等待扫码",
+                            opened: "已扫码",
+                            succeeded: "支付成功",
+                            failed: "支付失败",
+                            canceled: "已取消",
+                            expired: "已过期",
+                          }[task.payment_status ?? ""] ?? "未知"
+                        }
+                      />
                     </TableCell>
                     <TableCell>
                       {task.card_charged == null
@@ -1172,14 +1274,190 @@ export function PipelineRunPage() {
         </TabsContent>
 
         <TabsContent
+          value="delivery"
+          className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden border-t"
+        >
+          <div className="flex min-h-12 flex-wrap items-center gap-2 border-b py-2">
+            <span className="text-xs text-muted-foreground">
+              可交付记录包含支付链接及其对应的邮箱凭据
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              {deliverySelection.length > 0 && (
+                <Button
+                  disabled={copyDeliveries.isPending}
+                  onClick={() =>
+                    copyDeliveries.mutate({ taskIds: deliverySelection })
+                  }
+                  size="sm"
+                  variant="outline"
+                >
+                  <Clipboard />
+                  复制已选 ({deliverySelection.length})
+                </Button>
+              )}
+              <Button
+                disabled={copyDeliveries.isPending}
+                onClick={() => copyDeliveries.mutate({ all: true })}
+                size="sm"
+              >
+                <Clipboard />
+                复制全部可交付项
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <Table className="min-w-230">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">
+                    <SelectionCheckbox
+                      ids={deliveryRows
+                        .filter((item) => item.deliverable)
+                        .map((item) => item.task_id)}
+                      selected={deliverySelection}
+                      setSelected={setDeliverySelection}
+                    />
+                  </TableHead>
+                  <TableHead>邮箱</TableHead>
+                  <TableHead>支付链接</TableHead>
+                  <TableHead>提取状态</TableHead>
+                  <TableHead>扫码状态</TableHead>
+                  <TableHead>ChatGPT 密码</TableHead>
+                  <TableHead>Authenticator</TableHead>
+                  <TableHead className="w-24 text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {deliveryRows.map((item) => (
+                  <TableRow key={item.task_id}>
+                    <TableCell>
+                      {item.deliverable ? (
+                        <RowCheckbox
+                          id={item.task_id}
+                          selected={deliverySelection}
+                          setSelected={setDeliverySelection}
+                        />
+                      ) : (
+                        "-"
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {item.email}
+                    </TableCell>
+                    <TableCell className="max-w-80">
+                      {item.payment_url ? (
+                        <a
+                          className="block truncate font-mono text-xs text-sky-700 hover:underline dark:text-sky-300"
+                          href={item.payment_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          {item.payment_url}
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          尚未生成
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={item.task_status}
+                        label={TASK_STATUS_LABELS[item.task_status]}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={item.payment_status}
+                        label={
+                          {
+                            ready: "等待扫码",
+                            waiting: "等待扫码",
+                            opened: "已扫码",
+                            succeeded: "支付成功",
+                            failed: "支付失败",
+                            canceled: "已取消",
+                            expired: "已过期",
+                          }[item.payment_status ?? ""] ?? "未知"
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={item.chatgpt_password ? "set" : "not_set"}
+                        label={item.chatgpt_password ? "已设置" : "未设置"}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={item.totp_secret ? "enabled" : "not_enabled"}
+                        label={item.totp_secret ? "已启用" : "未启用"}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        aria-label={`复制 ${item.email} 的交付信息`}
+                        disabled={!item.deliverable || copyDeliveries.isPending}
+                        onClick={() =>
+                          copyDeliveries.mutate({ taskIds: [item.task_id] })
+                        }
+                        size="icon-sm"
+                        title="复制交付信息"
+                        variant="ghost"
+                      >
+                        <Clipboard />
+                      </Button>
+                      {item.payment_url && (
+                        <Button
+                          asChild
+                          size="icon-sm"
+                          title="打开支付链接"
+                          variant="ghost"
+                        >
+                          <a
+                            href={item.payment_url}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            <ExternalLink />
+                          </a>
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!deliveries.isLoading && !deliveryRows.length && (
+                  <TableRow>
+                    <TableCell
+                      className="h-40 text-center text-sm text-muted-foreground"
+                      colSpan={8}
+                    >
+                      本轮次暂无交付信息
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          <TablePagination
+            page={deliveryPage}
+            pageCount={deliveryPageCount}
+            onPageChange={(value) => {
+              setDeliveryPage(value)
+              setDeliverySelection([])
+            }}
+          />
+        </TabsContent>
+
+        <TabsContent
           value="cards"
           className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden border-t"
         >
           <div className="flex min-h-12 items-center border-b py-2">
             <CopySelectionBar
               selected={cardSelection}
-              values={selectedCards.map((card) => card.card_id)}
-              label="卡密 ID"
+              values={selectedCards.map((card) => card.card_code)}
+              label="卡密"
               clear={() => setCardSelection([])}
             />
           </div>
@@ -1212,7 +1490,7 @@ export function PipelineRunPage() {
                       />
                     </TableCell>
                     <TableCell className="font-mono text-xs">
-                      {card.card_hint}
+                      {card.card_code}
                     </TableCell>
                     <TableCell>{card.allocated_count}</TableCell>
                     <TableCell>{card.created_count}</TableCell>
@@ -1247,25 +1525,51 @@ export function PipelineRunPage() {
           value="events"
           className="mt-3 min-h-0 flex-1 overflow-auto border-t"
         >
-          <div className="divide-y font-mono text-xs">
+          <div className="divide-y text-xs">
             {(events.data?.items ?? []).map((event) => (
               <div
-                className="grid grid-cols-[72px_80px_minmax(0,1fr)] gap-3 px-2 py-2"
+                className={
+                  event.level === "error"
+                    ? "bg-red-50/60 px-3 py-3 dark:bg-red-950/20"
+                    : event.level === "warning"
+                      ? "bg-amber-50/60 px-3 py-3 dark:bg-amber-950/20"
+                      : "px-3 py-3"
+                }
                 key={event.id}
               >
-                <span className="text-muted-foreground">
-                  {DATE_FORMATTER.format(new Date(event.created_at))}
-                </span>
-                <span
-                  className={
-                    event.level === "error"
-                      ? "text-destructive"
-                      : "text-muted-foreground"
-                  }
-                >
-                  {event.event_type}
-                </span>
-                <span className="whitespace-pre-wrap">{event.message}</span>
+                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="font-mono text-muted-foreground tabular-nums">
+                    {DATE_FORMATTER.format(new Date(event.created_at))}
+                  </span>
+                  <StatusBadge
+                    status={event.level}
+                    label={
+                      {
+                        error: "错误",
+                        warning: "警告",
+                        info: "信息",
+                        debug: "调试",
+                      }[event.level] ?? event.level
+                    }
+                  />
+                  <span className="min-w-0 font-mono font-medium break-all">
+                    {event.event_type}
+                  </span>
+                </div>
+                {event.event_type === "runtime_traceback" ? (
+                  <details>
+                    <summary className="cursor-pointer text-muted-foreground">
+                      展开异常堆栈
+                    </summary>
+                    <pre className="mt-2 max-w-full overflow-x-auto font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
+                      {event.message}
+                    </pre>
+                  </details>
+                ) : (
+                  <div className="max-w-full font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
+                    {event.message}
+                  </div>
+                )}
               </div>
             ))}
             {!events.isLoading && !events.data?.items.length && (

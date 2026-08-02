@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -8,7 +9,12 @@ from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, KakaoTaskStatus
 from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
-from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient, payload_tasks
+from gpt_auto_register.modules.kakao.client import (
+    KakaoApiError,
+    KakaoClient,
+    canonical_payment_url,
+    payload_tasks,
+)
 from gpt_auto_register.modules.kakao.repository import KakaoTaskRepository
 from gpt_auto_register.modules.kakao.schemas import (
     KakaoCreateTasksRequest,
@@ -21,6 +27,7 @@ from gpt_auto_register.modules.kakao.schemas import (
     KakaoTaskListResponse,
     KakaoTaskSummary,
 )
+from gpt_auto_register.modules.kakao.state import apply_payment, apply_upstream, task_status
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.service import SettingsService
 
@@ -35,23 +42,6 @@ def _client(db: DatabaseSession) -> KakaoClient:
         return KakaoClient(settings.base_url, settings.timeout)
     except ValueError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
-
-
-def _status(value: object) -> KakaoTaskStatus:
-    try:
-        return KakaoTaskStatus(str(value or "queued").lower())
-    except ValueError:
-        return KakaoTaskStatus.QUEUED
-
-
-def _apply_upstream(task: KakaoTask, value: dict[str, object]) -> None:
-    task.status = _status(value.get("status"))
-    task.payment_status = str(value.get("payment_status") or "") or None
-    charged = value.get("card_charged")
-    task.card_charged = charged if isinstance(charged, bool) else None
-    task.payment_url = str(value.get("payment_url") or "") or None
-    task.error = str(value.get("error") or "") or None
-    task.upstream_payload = value
 
 
 @router.get("", response_model=KakaoTaskListResponse)
@@ -75,6 +65,13 @@ def list_kakao_tasks(
         limit=limit,
         offset=offset,
     )
+    changed = False
+    for item in items:
+        if not item.payment_url:
+            item.payment_url = canonical_payment_url(item.upstream_payload or {}) or None
+            changed = changed or bool(item.payment_url)
+    if changed:
+        db.commit()
     return KakaoTaskListResponse(
         items=items,
         total=total,
@@ -192,9 +189,9 @@ def create_kakao_tasks(
                     upstream_job_id=upstream_id,
                     card_id=card.id,
                     email=email,
-                    status=_status(value.get("status")),
+                    status=task_status(value.get("status")),
                 )
-                _apply_upstream(task, value)
+                apply_upstream(task, value)
                 db.add(task)
                 created += 1
         db.commit()
@@ -226,10 +223,46 @@ def sync_kakao_tasks(
                 if value is None:
                     failed += 1
                     continue
-                _apply_upstream(task, value)
+                apply_upstream(task, value)
                 processed += 1
         except KakaoApiError:
             failed += len(group)
+    db.commit()
+    return KakaoTaskActionResponse(processed=processed, failed=failed)
+
+
+@router.post("/payment-sync", response_model=KakaoTaskActionResponse)
+def sync_kakao_payment_statuses(
+    request: KakaoTaskIdsRequest,
+    db: DatabaseSession,
+) -> KakaoTaskActionResponse:
+    tasks = [
+        task
+        for task in KakaoTaskRepository(db).selected(request.task_ids, request.pipeline_run_id)
+        if task.status == KakaoTaskStatus.DONE
+        and task.payment_status not in {"succeeded", "failed", "canceled", "expired"}
+    ]
+    if not tasks:
+        return KakaoTaskActionResponse(processed=0)
+    client = _client(db)
+
+    def fetch(task: KakaoTask) -> tuple[str, object]:
+        try:
+            return task.id, client.kakao_status(task.upstream_job_id)
+        except KakaoApiError as error:
+            return task.id, error
+
+    workers = min(8, len(tasks))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = dict(executor.map(fetch, tasks))
+    processed = failed = 0
+    for task in tasks:
+        value = results.get(task.id)
+        if isinstance(value, KakaoApiError) or not isinstance(value, dict):
+            failed += 1
+            continue
+        apply_payment(task, value)
+        processed += 1
     db.commit()
     return KakaoTaskActionResponse(processed=processed, failed=failed)
 
@@ -256,12 +289,17 @@ def get_kakao_task_details(task_id: str, db: DatabaseSession) -> object:
     detail_error = kakao_error = ""
     try:
         detail = client.task_detail(task.upstream_job_id)
+        if isinstance(detail, dict):
+            apply_upstream(task, detail)
     except KakaoApiError as error:
         detail_error = str(error)
     try:
         kakao_status = client.kakao_status(task.upstream_job_id)
+        if isinstance(kakao_status, dict):
+            apply_payment(task, kakao_status)
     except KakaoApiError as error:
         kakao_error = str(error)
+    db.commit()
     return {
         "local": KakaoTaskSummary.model_validate(task).model_dump(mode="json"),
         "task": detail,
@@ -279,7 +317,7 @@ def cancel_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespo
     try:
         payload = _client(db).cancel_task(task.upstream_job_id)
         values = payload_tasks(payload)
-        _apply_upstream(task, values[0] if values else {"status": "canceled"})
+        apply_upstream(task, values[0] if values else {"status": "canceled"})
         db.commit()
         return KakaoTaskActionResponse(processed=1)
     except KakaoApiError as error:
@@ -295,7 +333,7 @@ def retry_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespon
         payload = _client(db).retry_task(task.upstream_job_id)
         values = payload_tasks(payload)
         if values:
-            _apply_upstream(task, values[0])
+            apply_upstream(task, values[0])
         db.commit()
         return KakaoTaskActionResponse(processed=1)
     except KakaoApiError as error:

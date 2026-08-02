@@ -33,6 +33,7 @@ import {
   useResetAccountApiAccountsEmailResetPost,
 } from "@/api/generated"
 import { ApiError } from "@/lib/api-client"
+import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
 import { useAccountsStore } from "@/stores/accounts-store"
 import {
@@ -45,7 +46,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@workspace/ui/components/alert-dialog"
-import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import {
@@ -87,17 +87,6 @@ const STATUS_LABELS = {
   [AccountStatus.in_use]: "使用中",
   [AccountStatus.done]: "已完成",
   [AccountStatus.failed]: "失败",
-} as const
-
-const STATUS_STYLES = {
-  [AccountStatus.available]:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  [AccountStatus.in_use]:
-    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
-  [AccountStatus.done]:
-    "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300",
-  [AccountStatus.failed]:
-    "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
 } as const
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
@@ -739,54 +728,45 @@ export function AccountsPage() {
                       {account.mail_type === "link" ? "邮箱链接" : "OAuth"}
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        className={STATUS_STYLES[account.status]}
-                        variant="outline"
-                      >
-                        {STATUS_LABELS[account.status]}
-                      </Badge>
+                      <StatusBadge
+                        status={account.status}
+                        label={STATUS_LABELS[account.status]}
+                      />
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        title={account.security_error ?? undefined}
-                        variant={
-                          account.password_status === "set" ||
-                          account.password_status === "available"
-                            ? "default"
-                            : "outline"
-                        }
-                      >
-                        {{
-                          set: "已设置",
-                          available: "可用",
-                          failed: "失败",
-                          unsupported: "不支持",
-                          not_requested: "未设置",
-                          not_set: "未设置",
-                        }[account.password_status ?? ""] ??
+                      <StatusBadge
+                        status={account.password_status}
+                        label={
+                          {
+                            set: "已设置",
+                            available: "可用",
+                            failed: "失败",
+                            unsupported: "不支持",
+                            not_requested: "未设置",
+                            not_set: "未设置",
+                          }[account.password_status ?? ""] ??
                           account.password_status ??
-                          "未记录"}
-                      </Badge>
+                          "未记录"
+                        }
+                        title={account.security_error ?? undefined}
+                      />
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        title={account.security_error ?? undefined}
-                        variant={
-                          account.mfa_status === "enabled"
-                            ? "default"
-                            : "outline"
-                        }
-                      >
-                        {{
-                          enabled: "已验证",
-                          failed: "失败",
-                          not_requested: "未启用",
-                          not_enabled: "未启用",
-                          skipped_partial: "已跳过",
-                        }[account.mfa_status ?? ""] ??
+                      <StatusBadge
+                        status={account.mfa_status}
+                        label={
+                          {
+                            enabled: "已验证",
+                            failed: "失败",
+                            not_requested: "未启用",
+                            not_enabled: "未启用",
+                            skipped_partial: "已跳过",
+                          }[account.mfa_status ?? ""] ??
                           account.mfa_status ??
-                          "未记录"}
-                      </Badge>
+                          "未记录"
+                        }
+                        title={account.security_error ?? undefined}
+                      />
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {formatDate(account.claimed_at)}

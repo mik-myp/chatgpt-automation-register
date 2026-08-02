@@ -285,6 +285,63 @@ def _verify_mfa(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "verified": True}
 
 
+def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
+    from account_security import enable_authenticator_mfa
+    from auth_flow import AuthFlow
+    from config import Config
+
+    account = payload["account"]
+    credential = payload["credential"]
+    options = payload.get("registration", {})
+    mail_options = payload.get("mail", {})
+    flow = AuthFlow(Config(proxy=str(options.get("proxy") or "").strip() or None))
+    flow.result.email = str(account.get("email") or "")
+    flow.result.device_id = str(credential.get("device_id") or "")
+    for part in str(credential.get("cookie_header") or "").split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name and value:
+            flow.session.cookies.set(name, value, domain="chatgpt.com")
+    if mail_options.get("source") == "cf_temp":
+        from mail_cf import CFTempEmailProvider
+
+        mail_provider = CFTempEmailProvider(
+            api_url=str(mail_options.get("cf_api_url") or ""),
+            admin_token=str(mail_options.get("cf_admin_token") or ""),
+            domain=str(mail_options.get("cf_domain") or ""),
+        )
+    elif account.get("mail_type") == "link":
+        from mail_link import LinkMailProvider
+
+        mail_provider = LinkMailProvider(
+            email=flow.result.email,
+            mail_url=str(account.get("mail_url") or ""),
+        )
+    else:
+        from mail_outlook import OutlookMailProvider
+
+        mail_provider = OutlookMailProvider(
+            email=flow.result.email,
+            password=str(account.get("password") or ""),
+            client_id=str(account.get("client_id") or ""),
+            refresh_token=str(account.get("refresh_token") or ""),
+        )
+    secret = enable_authenticator_mfa(
+        flow,
+        mail_provider,
+        email=flow.result.email,
+        otp_timeout=int(options.get("mfa_otp_timeout") or 180),
+    )
+    return {
+        "ok": True,
+        "credential": {
+            "device_id": flow.result.device_id,
+            "cookie_header": flow.result.cookie_header,
+            "totp_secret": secret,
+            "security": {"mfa": {"requested": True, "status": "enabled", "error": ""}},
+        },
+    }
+
+
 def main() -> None:
     try:
         logging.basicConfig(
@@ -310,6 +367,8 @@ def main() -> None:
             result = _export_test(payload)
         elif action == "verify_mfa":
             result = _verify_mfa(payload)
+        elif action == "enable_mfa":
+            result = _enable_mfa(payload)
         else:
             raise RuntimeError(f"不支持的旧运行时操作: {action}")
     except Exception as error:

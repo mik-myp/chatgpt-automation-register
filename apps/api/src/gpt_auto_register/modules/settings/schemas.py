@@ -11,6 +11,7 @@ class RegistrationSettings(BaseModel):
     password_mode: Literal["none", "random", "fixed"] = "random"
     fixed_password: str = Field(default="", max_length=256)
     enable_authenticator_mfa: bool = False
+    mfa_otp_timeout: int = Field(default=180, ge=30, le=600)
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True
@@ -77,12 +78,43 @@ class ExportSettings(BaseModel):
     sub2api_group_ids: str = ""
 
 
+DeliveryCopyField = Literal[
+    "payment_url",
+    "email",
+    "mail_url",
+    "chatgpt_password",
+    "totp_secret",
+]
+
+
+class DeliveryCopyRow(BaseModel):
+    fields: list[DeliveryCopyField] = Field(min_length=1)
+    separator: str = Field(default=" --- ", max_length=32)
+
+
+class DeliveryCopySettings(BaseModel):
+    sequence_style: Literal["none", "number", "chinese_number", "chinese"] = "chinese"
+    record_separator: Literal["newline", "blank_line"] = "blank_line"
+    show_labels: bool = False
+    missing_policy: Literal["placeholder", "skip"] = "placeholder"
+    placeholder: str = Field(default="-", max_length=16)
+    rows: list[DeliveryCopyRow] = Field(
+        default_factory=lambda: [
+            DeliveryCopyRow(fields=["payment_url"], separator=""),
+            DeliveryCopyRow(fields=["email", "mail_url", "chatgpt_password", "totp_secret"]),
+        ],
+        min_length=1,
+        max_length=10,
+    )
+
+
 class SystemSettingsResponse(BaseModel):
     registration: RegistrationSettings
     mail: MailSettings
     kakao: KakaoSettings
     sms: SmsSettings
     export: ExportSettings
+    delivery_copy: DeliveryCopySettings
 
 
 class SmsSettingsUpdate(BaseModel):
@@ -122,6 +154,7 @@ class SystemSettingsUpdate(BaseModel):
     kakao: KakaoSettings
     sms: SmsSettingsUpdate
     export: ExportSettingsUpdate
+    delivery_copy: DeliveryCopySettings
 
 
 class SmsTestResponse(BaseModel):

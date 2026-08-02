@@ -91,6 +91,10 @@ class KakaoTask(TimestampMixin, Base):
         enum_type(KakaoTaskStatus, "kakao_task_status"), index=True, nullable=False
     )
     payment_status: Mapped[str | None] = mapped_column(String(64), index=True)
+    payment_message: Mapped[str | None] = mapped_column(Text)
+    payment_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    payment_scanned: Mapped[bool | None] = mapped_column(Boolean)
+    payment_successful: Mapped[bool | None] = mapped_column(Boolean)
     card_charged: Mapped[bool | None] = mapped_column(Boolean)
     payment_url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)

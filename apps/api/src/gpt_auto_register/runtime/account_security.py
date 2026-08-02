@@ -213,7 +213,7 @@ def security_outcome(
                 flow,
                 mail_provider,
                 email=flow.result.email,
-                otp_timeout=int(options.get("otp_timeout") or 180),
+                otp_timeout=int(options.get("mfa_otp_timeout") or 180),
             )
             mfa["status"] = "enabled"
         except Exception as error:

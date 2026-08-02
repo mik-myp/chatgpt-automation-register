@@ -25,6 +25,7 @@ import {
   useListResultsApiResultsGet,
 } from "@/api/generated"
 import { TablePagination } from "@/components/table-pagination"
+import { StatusBadge } from "@/components/status-badge"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import {
   AlertDialog,
@@ -101,12 +102,11 @@ function SecurityState({
   }
   if (!status)
     return <span className="text-xs text-muted-foreground">未记录</span>
-  const successful =
-    status === "set" || status === "available" || status === "enabled"
   return (
-    <Badge variant={successful ? "default" : "outline"}>
-      {labels[status] ?? `${kind === "mfa" ? "MFA" : "密码"}: ${status}`}
-    </Badge>
+    <StatusBadge
+      status={status}
+      label={labels[status] ?? `${kind === "mfa" ? "MFA" : "密码"}: ${status}`}
+    />
   )
 }
 
