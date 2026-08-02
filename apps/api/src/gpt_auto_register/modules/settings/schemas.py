@@ -85,6 +85,7 @@ DeliveryCopyField = Literal[
     "chatgpt_password",
     "totp_secret",
 ]
+DeliveryCopyType = Literal["payment_links", "account_info"]
 
 
 class DeliveryCopyRow(BaseModel):
@@ -92,20 +93,47 @@ class DeliveryCopyRow(BaseModel):
     separator: str = Field(default=" --- ", max_length=32)
 
 
-class DeliveryCopySettings(BaseModel):
+class DeliveryFormatSettings(BaseModel):
     sequence_style: Literal["none", "number", "chinese_number", "chinese"] = "chinese"
     record_separator: Literal["newline", "blank_line"] = "blank_line"
     show_labels: bool = False
     missing_policy: Literal["placeholder", "skip"] = "placeholder"
     placeholder: str = Field(default="-", max_length=16)
     rows: list[DeliveryCopyRow] = Field(
-        default_factory=lambda: [
-            DeliveryCopyRow(fields=["payment_url"], separator=""),
-            DeliveryCopyRow(fields=["email", "mail_url", "chatgpt_password", "totp_secret"]),
-        ],
+        default_factory=lambda: [DeliveryCopyRow(fields=["email"])],
         min_length=1,
         max_length=10,
     )
+
+
+class DeliveryCopySettings(BaseModel):
+    payment_links: DeliveryFormatSettings = Field(
+        default_factory=lambda: DeliveryFormatSettings(
+            rows=[DeliveryCopyRow(fields=["payment_url"], separator="")]
+        )
+    )
+    account_info: DeliveryFormatSettings = Field(
+        default_factory=lambda: DeliveryFormatSettings(
+            sequence_style="none",
+            rows=[
+                DeliveryCopyRow(
+                    fields=["email", "mail_url", "chatgpt_password", "totp_secret"]
+                )
+            ],
+        )
+    )
+
+    @model_validator(mode="after")
+    def validate_copy_fields(self) -> "DeliveryCopySettings":
+        payment_fields = {
+            field for row in self.payment_links.rows for field in row.fields
+        }
+        account_fields = {field for row in self.account_info.rows for field in row.fields}
+        if payment_fields != {"payment_url"}:
+            raise ValueError("支付链接配置只能包含支付链接字段")
+        if "payment_url" in account_fields:
+            raise ValueError("邮箱信息配置不能包含支付链接字段")
+        return self
 
 
 class MaintenanceSettings(BaseModel):

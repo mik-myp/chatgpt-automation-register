@@ -135,6 +135,7 @@ class PipelineDeliveryListResponse(BaseModel):
 class CopyPipelineDeliveriesRequest(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
     all_deliverable: bool = False
+    copy_type: Literal["payment_links", "account_info"]
 
 
 class CopyPipelineDeliveriesResponse(BaseModel):

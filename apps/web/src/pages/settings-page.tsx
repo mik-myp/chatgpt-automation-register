@@ -1,27 +1,23 @@
 import { type ReactNode, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
 import {
-  ChevronLeft,
-  ChevronRight,
   Dices,
   Eye,
   EyeOff,
   PlugZap,
   RefreshCw,
   Save,
-  Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import {
-  type DeliveryCopyRowFieldsItem,
-  type DeliveryCopySettings,
   type SystemSettingsResponse,
   type SystemSettingsUpdate,
   useGetSettingsApiSettingsGet,
   useUpdateSettingsApiSettingsPut,
 } from "@/api/generated"
 import { DataTransferPanel } from "@/components/settings/data-transfer-panel"
+import { DeliveryCopyPanel } from "@/components/settings/delivery-copy-panel"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -100,62 +96,23 @@ function editableSettings(
       sub2api_group_ids: settings.export.sub2api_group_ids,
     },
     delivery_copy: {
-      ...settings.delivery_copy,
-      rows: (settings.delivery_copy.rows ?? []).map((row) => ({
-        ...row,
-        fields: [...row.fields],
-      })),
+      payment_links: {
+        ...settings.delivery_copy.payment_links,
+        rows: settings.delivery_copy.payment_links?.rows?.map((row) => ({
+          ...row,
+          fields: [...row.fields],
+        })),
+      },
+      account_info: {
+        ...settings.delivery_copy.account_info,
+        rows: settings.delivery_copy.account_info?.rows?.map((row) => ({
+          ...row,
+          fields: [...row.fields],
+        })),
+      },
     },
     maintenance: { ...settings.maintenance },
   }
-}
-
-const DELIVERY_FIELDS: Array<{
-  value: DeliveryCopyRowFieldsItem
-  label: string
-  sample: string
-}> = [
-  {
-    value: "payment_url",
-    label: "支付链接",
-    sample: "https://pay.example.com/checkout",
-  },
-  { value: "email", label: "邮箱", sample: "user@example.com" },
-  {
-    value: "mail_url",
-    label: "邮件查询地址",
-    sample: "https://mail.example.com/inbox",
-  },
-  { value: "chatgpt_password", label: "ChatGPT 密码", sample: "Password123" },
-  {
-    value: "totp_secret",
-    label: "Authenticator 密钥",
-    sample: "JBSWY3DPEHPK3PXP",
-  },
-]
-
-function deliveryPreview(settings: DeliveryCopySettings) {
-  const samples = Object.fromEntries(
-    DELIVERY_FIELDS.map((field) => [field.value, field.sample])
-  )
-  const lines = (settings.rows ?? []).map((row) =>
-    row.fields
-      .map((field) => {
-        const value = samples[field]
-        const label = DELIVERY_FIELDS.find(
-          (item) => item.value === field
-        )?.label
-        return settings.show_labels ? `${label}: ${value}` : value
-      })
-      .join(row.separator ?? " --- ")
-  )
-  const prefix = {
-    none: "",
-    number: "1.",
-    chinese_number: "第1个",
-    chinese: "第一个",
-  }[settings.sequence_style ?? "chinese"]
-  return [prefix, ...lines].filter(Boolean).join("\n")
 }
 
 function Field({
@@ -308,7 +265,7 @@ export function SettingsPage() {
         className="flex min-h-0 flex-1 flex-col"
         defaultValue="registration"
       >
-        <TabsList className="w-full shrink-0 justify-start overflow-x-auto">
+        <TabsList className="w-full shrink-0 justify-start">
           <TabsTrigger className="shrink-0" value="registration">
             注册
           </TabsTrigger>
@@ -568,296 +525,15 @@ export function SettingsPage() {
             }
           />
         </TabsContent>
-
         <TabsContent
           className="mt-5 min-h-0 flex-1 overflow-auto"
           value="delivery"
         >
-          <div className="mx-auto w-full max-w-5xl">
-            <Section
-              title="交付记录格式"
-              description="支付链接与对应邮箱凭据按同一记录复制；单条复制与批量复制共用此模板。"
-            >
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="序号格式">
-                  <Select
-                    value={form.delivery_copy.sequence_style ?? "chinese"}
-                    onValueChange={(value) =>
-                      setForm({
-                        ...form,
-                        delivery_copy: {
-                          ...form.delivery_copy,
-                          sequence_style:
-                            value as DeliveryCopySettings["sequence_style"],
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">不显示序号</SelectItem>
-                      <SelectItem value="number">1.</SelectItem>
-                      <SelectItem value="chinese_number">第1个</SelectItem>
-                      <SelectItem value="chinese">第一个</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="记录间隔">
-                  <Select
-                    value={form.delivery_copy.record_separator ?? "blank_line"}
-                    onValueChange={(value) =>
-                      setForm({
-                        ...form,
-                        delivery_copy: {
-                          ...form.delivery_copy,
-                          record_separator:
-                            value as DeliveryCopySettings["record_separator"],
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="newline">换行</SelectItem>
-                      <SelectItem value="blank_line">空一行</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="缺失字段处理">
-                  <Select
-                    value={form.delivery_copy.missing_policy ?? "placeholder"}
-                    onValueChange={(value) =>
-                      setForm({
-                        ...form,
-                        delivery_copy: {
-                          ...form.delivery_copy,
-                          missing_policy:
-                            value as DeliveryCopySettings["missing_policy"],
-                        },
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="placeholder">保留占位符</SelectItem>
-                      <SelectItem value="skip">跳过整条记录</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="占位符">
-                  <Input
-                    disabled={form.delivery_copy.missing_policy === "skip"}
-                    maxLength={16}
-                    value={form.delivery_copy.placeholder ?? "-"}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        delivery_copy: {
-                          ...form.delivery_copy,
-                          placeholder: event.target.value,
-                        },
-                      })
-                    }
-                  />
-                </Field>
-              </div>
-              <div className="mt-4">
-                <Toggle
-                  label="显示字段名称"
-                  checked={form.delivery_copy.show_labels ?? false}
-                  onChange={(checked) =>
-                    setForm({
-                      ...form,
-                      delivery_copy: {
-                        ...form.delivery_copy,
-                        show_labels: checked,
-                      },
-                    })
-                  }
-                />
-              </div>
-            </Section>
-
-            <Section title="模板行">
-              <div className="grid gap-3">
-                {(form.delivery_copy.rows ?? []).map((row, rowIndex) => (
-                  <div className="border p-3" key={rowIndex}>
-                    <div className="mb-3 flex items-center gap-2">
-                      <span className="text-xs font-medium">
-                        第 {rowIndex + 1} 行
-                      </span>
-                      <Input
-                        aria-label={`第 ${rowIndex + 1} 行分隔符`}
-                        className="ml-auto w-28 font-mono"
-                        maxLength={32}
-                        value={row.separator ?? " --- "}
-                        onChange={(event) => {
-                          const rows = [...(form.delivery_copy.rows ?? [])]
-                          rows[rowIndex] = {
-                            ...row,
-                            separator: event.target.value,
-                          }
-                          setForm({
-                            ...form,
-                            delivery_copy: { ...form.delivery_copy, rows },
-                          })
-                        }}
-                      />
-                      <Button
-                        aria-label={`删除第 ${rowIndex + 1} 行`}
-                        disabled={(form.delivery_copy.rows?.length ?? 0) <= 1}
-                        onClick={() => {
-                          const rows = (form.delivery_copy.rows ?? []).filter(
-                            (_, index) => index !== rowIndex
-                          )
-                          setForm({
-                            ...form,
-                            delivery_copy: { ...form.delivery_copy, rows },
-                          })
-                        }}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {row.fields.map((field, fieldIndex) => {
-                        const label =
-                          DELIVERY_FIELDS.find((item) => item.value === field)
-                            ?.label ?? field
-                        const move = (offset: number) => {
-                          const fields = [...row.fields]
-                          const target = fieldIndex + offset
-                          ;[fields[fieldIndex], fields[target]] = [
-                            fields[target],
-                            fields[fieldIndex],
-                          ]
-                          const rows = [...(form.delivery_copy.rows ?? [])]
-                          rows[rowIndex] = { ...row, fields }
-                          setForm({
-                            ...form,
-                            delivery_copy: { ...form.delivery_copy, rows },
-                          })
-                        }
-                        return (
-                          <div
-                            className="flex items-center border bg-muted/20"
-                            key={`${field}-${fieldIndex}`}
-                          >
-                            <span className="px-2 text-xs">{label}</span>
-                            <Button
-                              aria-label={`${label}向前移动`}
-                              disabled={fieldIndex === 0}
-                              onClick={() => move(-1)}
-                              size="icon-sm"
-                              title="向前移动"
-                              variant="ghost"
-                            >
-                              <ChevronLeft />
-                            </Button>
-                            <Button
-                              aria-label={`${label}向后移动`}
-                              disabled={fieldIndex === row.fields.length - 1}
-                              onClick={() => move(1)}
-                              size="icon-sm"
-                              title="向后移动"
-                              variant="ghost"
-                            >
-                              <ChevronRight />
-                            </Button>
-                            <Button
-                              aria-label={`移除${label}`}
-                              disabled={row.fields.length <= 1}
-                              onClick={() => {
-                                const rows = [
-                                  ...(form.delivery_copy.rows ?? []),
-                                ]
-                                rows[rowIndex] = {
-                                  ...row,
-                                  fields: row.fields.filter(
-                                    (_, index) => index !== fieldIndex
-                                  ),
-                                }
-                                setForm({
-                                  ...form,
-                                  delivery_copy: {
-                                    ...form.delivery_copy,
-                                    rows,
-                                  },
-                                })
-                              }}
-                              size="icon-sm"
-                              variant="ghost"
-                            >
-                              <Trash2 />
-                            </Button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {DELIVERY_FIELDS.filter(
-                        (field) => !row.fields.includes(field.value)
-                      ).map((field) => (
-                        <Button
-                          key={field.value}
-                          onClick={() => {
-                            const rows = [...(form.delivery_copy.rows ?? [])]
-                            rows[rowIndex] = {
-                              ...row,
-                              fields: [...row.fields, field.value],
-                            }
-                            setForm({
-                              ...form,
-                              delivery_copy: { ...form.delivery_copy, rows },
-                            })
-                          }}
-                          size="sm"
-                          variant="outline"
-                        >
-                          + {field.label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                <Button
-                  disabled={(form.delivery_copy.rows?.length ?? 0) >= 10}
-                  onClick={() =>
-                    setForm({
-                      ...form,
-                      delivery_copy: {
-                        ...form.delivery_copy,
-                        rows: [
-                          ...(form.delivery_copy.rows ?? []),
-                          { fields: ["email"], separator: " --- " },
-                        ],
-                      },
-                    })
-                  }
-                  size="sm"
-                  variant="outline"
-                >
-                  新增一行
-                </Button>
-              </div>
-            </Section>
-
-            <Section title="预览">
-              <pre className="overflow-auto border bg-muted/20 p-4 font-mono text-xs whitespace-pre-wrap">
-                {deliveryPreview(form.delivery_copy)}
-              </pre>
-            </Section>
-          </div>
+          <DeliveryCopyPanel
+            value={form.delivery_copy}
+            onChange={(delivery_copy) => setForm({ ...form, delivery_copy })}
+          />
         </TabsContent>
-
         <TabsContent className="mt-5 min-h-0 flex-1 overflow-auto" value="mail">
           <div className="mx-auto w-full max-w-5xl">
             <Section

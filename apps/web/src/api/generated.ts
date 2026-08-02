@@ -369,9 +369,18 @@ export interface ConnectionTestResponse {
   message: string;
 }
 
+export type CopyPipelineDeliveriesRequestCopyType = typeof CopyPipelineDeliveriesRequestCopyType[keyof typeof CopyPipelineDeliveriesRequestCopyType];
+
+
+export const CopyPipelineDeliveriesRequestCopyType = {
+  payment_links: 'payment_links',
+  account_info: 'account_info',
+} as const;
+
 export interface CopyPipelineDeliveriesRequest {
   task_ids?: string[];
   all_deliverable?: boolean;
+  copy_type: CopyPipelineDeliveriesRequestCopyType;
 }
 
 export interface CopyPipelineDeliveriesResponse {
@@ -419,37 +428,37 @@ export interface DeliveryCopyRow {
   separator?: string;
 }
 
-export type DeliveryCopySettingsSequenceStyle = typeof DeliveryCopySettingsSequenceStyle[keyof typeof DeliveryCopySettingsSequenceStyle];
+export type DeliveryFormatSettingsSequenceStyle = typeof DeliveryFormatSettingsSequenceStyle[keyof typeof DeliveryFormatSettingsSequenceStyle];
 
 
-export const DeliveryCopySettingsSequenceStyle = {
+export const DeliveryFormatSettingsSequenceStyle = {
   none: 'none',
   number: 'number',
   chinese_number: 'chinese_number',
   chinese: 'chinese',
 } as const;
 
-export type DeliveryCopySettingsRecordSeparator = typeof DeliveryCopySettingsRecordSeparator[keyof typeof DeliveryCopySettingsRecordSeparator];
+export type DeliveryFormatSettingsRecordSeparator = typeof DeliveryFormatSettingsRecordSeparator[keyof typeof DeliveryFormatSettingsRecordSeparator];
 
 
-export const DeliveryCopySettingsRecordSeparator = {
+export const DeliveryFormatSettingsRecordSeparator = {
   newline: 'newline',
   blank_line: 'blank_line',
 } as const;
 
-export type DeliveryCopySettingsMissingPolicy = typeof DeliveryCopySettingsMissingPolicy[keyof typeof DeliveryCopySettingsMissingPolicy];
+export type DeliveryFormatSettingsMissingPolicy = typeof DeliveryFormatSettingsMissingPolicy[keyof typeof DeliveryFormatSettingsMissingPolicy];
 
 
-export const DeliveryCopySettingsMissingPolicy = {
+export const DeliveryFormatSettingsMissingPolicy = {
   placeholder: 'placeholder',
   skip: 'skip',
 } as const;
 
-export interface DeliveryCopySettings {
-  sequence_style?: DeliveryCopySettingsSequenceStyle;
-  record_separator?: DeliveryCopySettingsRecordSeparator;
+export interface DeliveryFormatSettings {
+  sequence_style?: DeliveryFormatSettingsSequenceStyle;
+  record_separator?: DeliveryFormatSettingsRecordSeparator;
   show_labels?: boolean;
-  missing_policy?: DeliveryCopySettingsMissingPolicy;
+  missing_policy?: DeliveryFormatSettingsMissingPolicy;
   /** @maxLength 16 */
   placeholder?: string;
   /**
@@ -457,6 +466,11 @@ export interface DeliveryCopySettings {
      * @maxItems 10
      */
   rows?: DeliveryCopyRow[];
+}
+
+export interface DeliveryCopySettings {
+  payment_links?: DeliveryFormatSettings;
+  account_info?: DeliveryFormatSettings;
 }
 
 export type RegistrationResultDetailMetadataJson = { [key: string]: unknown };

@@ -172,6 +172,7 @@ def copy_pipeline_deliveries(
     text, copied, skipped = format_deliveries(
         page.items,
         SettingsService(db).get().delivery_copy,
+        request.copy_type,
     )
     return CopyPipelineDeliveriesResponse(text=text, copied=copied, skipped=skipped)
 

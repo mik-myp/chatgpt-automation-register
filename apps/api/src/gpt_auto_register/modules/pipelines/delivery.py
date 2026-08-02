@@ -7,7 +7,7 @@ from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
 from gpt_auto_register.db.models.kakao import KakaoTask
 from gpt_auto_register.modules.kakao.client import canonical_payment_url
 from gpt_auto_register.modules.pipelines.schemas import PipelineDeliverySummary
-from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
+from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings, DeliveryCopyType
 
 FIELD_LABELS = {
     "payment_url": "支付链接",
@@ -74,8 +74,11 @@ def list_deliveries(
 
 
 def format_deliveries(
-    items: list[PipelineDeliverySummary], settings: DeliveryCopySettings
+    items: list[PipelineDeliverySummary],
+    settings: DeliveryCopySettings,
+    copy_type: DeliveryCopyType,
 ) -> tuple[str, int, int]:
+    format_settings = getattr(settings, copy_type)
     blocks: list[str] = []
     skipped = 0
     for item in items:
@@ -85,16 +88,16 @@ def format_deliveries(
         values = item.model_dump()
         lines: list[str] = []
         incomplete = False
-        for row in settings.rows:
+        for row in format_settings.rows:
             parts: list[str] = []
             for field in row.fields:
                 value = str(values.get(field) or "")
                 if not value:
-                    if settings.missing_policy == "skip":
+                    if format_settings.missing_policy == "skip":
                         incomplete = True
                         break
-                    value = settings.placeholder
-                if settings.show_labels:
+                    value = format_settings.placeholder
+                if format_settings.show_labels:
                     value = f"{FIELD_LABELS[field]}: {value}"
                 parts.append(value)
             if incomplete:
@@ -104,9 +107,9 @@ def format_deliveries(
             skipped += 1
             continue
         index = len(blocks) + 1
-        prefix = _sequence_label(index, settings.sequence_style)
+        prefix = _sequence_label(index, format_settings.sequence_style)
         blocks.append("\n".join([prefix, *lines] if prefix else lines))
-    separator = "\n\n" if settings.record_separator == "blank_line" else "\n"
+    separator = "\n\n" if format_settings.record_separator == "blank_line" else "\n"
     return separator.join(blocks), len(blocks), skipped
 
 

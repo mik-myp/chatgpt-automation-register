@@ -9,6 +9,8 @@ import {
   ExternalLink,
   Eye,
   Inbox,
+  LinkIcon,
+  Mail,
   Pause,
   Play,
   Plus,
@@ -34,10 +36,7 @@ import {
   type PipelineDeliverySummary,
 } from "@/api/generated"
 import { ApiError, apiRequest } from "@/lib/api-client"
-import {
-  isTerminalPaymentStatus,
-  paymentStatusLabel,
-} from "@/lib/kakao-status"
+import { isTerminalPaymentStatus, paymentStatusLabel } from "@/lib/kakao-status"
 import { StatusBadge } from "@/components/status-badge"
 import {
   RuntimeEventLog,
@@ -757,25 +756,35 @@ export function PipelineRunPage() {
   const copyDeliveries = useMutation<
     { text: string; copied: number; skipped: number },
     ApiError,
-    { taskIds?: string[]; all?: boolean }
+    {
+      copyType: "payment_links" | "account_info"
+      taskIds?: string[]
+      all?: boolean
+    }
   >({
-    mutationFn: ({ taskIds = [], all = false }) =>
+    mutationFn: ({ copyType, taskIds = [], all = false }) =>
       apiRequest(
         `/api/pipelines/runs/${encodeURIComponent(runId)}/deliveries/copy`,
         {
           method: "POST",
-          data: { task_ids: taskIds, all_deliverable: all },
+          data: {
+            task_ids: taskIds,
+            all_deliverable: all,
+            copy_type: copyType,
+          },
         }
       ),
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      const label =
+        variables.copyType === "payment_links" ? "支付链接" : "邮箱信息"
       if (!result.copied) {
-        toast.error("没有可复制的交付信息")
+        toast.error(`没有可复制的${label}`)
         return
       }
       await navigator.clipboard.writeText(result.text)
       setDeliverySelection([])
       toast.success(
-        `已复制 ${result.copied} 条交付信息${result.skipped ? `，跳过 ${result.skipped} 条` : ""}`
+        `已复制 ${result.copied} 条${label}${result.skipped ? `，跳过 ${result.skipped} 条` : ""}`
       )
     },
     onError: (error) => toast.error(error.message),
@@ -932,7 +941,7 @@ export function PipelineRunPage() {
         value={activeTab}
         onValueChange={setActiveTab}
       >
-        <TabsList className="w-full justify-start overflow-x-auto">
+        <TabsList className="w-full justify-start">
           <TabsTrigger className="shrink-0" value="items">
             注册项
           </TabsTrigger>
@@ -1271,25 +1280,62 @@ export function PipelineRunPage() {
             </span>
             <div className="ml-auto flex items-center gap-2">
               {deliverySelection.length > 0 && (
-                <Button
-                  disabled={copyDeliveries.isPending}
-                  onClick={() =>
-                    copyDeliveries.mutate({ taskIds: deliverySelection })
-                  }
-                  size="sm"
-                  variant="outline"
-                >
-                  <Clipboard />
-                  复制已选 ({deliverySelection.length})
-                </Button>
+                <>
+                  <Button
+                    disabled={copyDeliveries.isPending}
+                    onClick={() =>
+                      copyDeliveries.mutate({
+                        copyType: "payment_links",
+                        taskIds: deliverySelection,
+                      })
+                    }
+                    size="sm"
+                    variant="outline"
+                  >
+                    <LinkIcon />
+                    已选支付链接 ({deliverySelection.length})
+                  </Button>
+                  <Button
+                    disabled={copyDeliveries.isPending}
+                    onClick={() =>
+                      copyDeliveries.mutate({
+                        copyType: "account_info",
+                        taskIds: deliverySelection,
+                      })
+                    }
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Mail />
+                    已选邮箱信息 ({deliverySelection.length})
+                  </Button>
+                </>
               )}
               <Button
                 disabled={copyDeliveries.isPending}
-                onClick={() => copyDeliveries.mutate({ all: true })}
+                onClick={() =>
+                  copyDeliveries.mutate({
+                    all: true,
+                    copyType: "payment_links",
+                  })
+                }
                 size="sm"
               >
-                <Clipboard />
-                复制全部可交付项
+                <LinkIcon />
+                全部支付链接
+              </Button>
+              <Button
+                disabled={copyDeliveries.isPending}
+                onClick={() =>
+                  copyDeliveries.mutate({
+                    all: true,
+                    copyType: "account_info",
+                  })
+                }
+                size="sm"
+              >
+                <Mail />
+                全部邮箱信息
               </Button>
             </div>
           </div>
@@ -1374,16 +1420,34 @@ export function PipelineRunPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
-                        aria-label={`复制 ${item.email} 的交付信息`}
+                        aria-label={`复制 ${item.email} 的支付链接`}
                         disabled={!item.deliverable || copyDeliveries.isPending}
                         onClick={() =>
-                          copyDeliveries.mutate({ taskIds: [item.task_id] })
+                          copyDeliveries.mutate({
+                            copyType: "payment_links",
+                            taskIds: [item.task_id],
+                          })
                         }
                         size="icon-sm"
-                        title="复制交付信息"
+                        title="复制支付链接"
                         variant="ghost"
                       >
-                        <Clipboard />
+                        <LinkIcon />
+                      </Button>
+                      <Button
+                        aria-label={`复制 ${item.email} 的邮箱信息`}
+                        disabled={!item.deliverable || copyDeliveries.isPending}
+                        onClick={() =>
+                          copyDeliveries.mutate({
+                            copyType: "account_info",
+                            taskIds: [item.task_id],
+                          })
+                        }
+                        size="icon-sm"
+                        title="复制邮箱信息"
+                        variant="ghost"
+                      >
+                        <Mail />
                       </Button>
                       {item.payment_url && (
                         <Button
@@ -1501,7 +1565,7 @@ export function PipelineRunPage() {
 
         <TabsContent
           value="events"
-          className="mt-3 min-h-0 flex-1 overflow-auto border-t"
+          className="mt-3 min-h-0 flex-1 overflow-hidden border-t"
         >
           <RuntimeEventLog
             events={events.data?.items ?? []}

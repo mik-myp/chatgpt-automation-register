@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from gpt_auto_register.db.models.kakao import KakaoTaskStatus
 from gpt_auto_register.modules.pipelines.delivery import format_deliveries
 from gpt_auto_register.modules.pipelines.schemas import PipelineDeliverySummary
@@ -24,14 +27,23 @@ def _delivery(**overrides: object) -> PipelineDeliverySummary:
     return PipelineDeliverySummary.model_validate(values)
 
 
-def test_delivery_copy_formats_link_and_corresponding_account() -> None:
-    text, copied, skipped = format_deliveries([_delivery()], DeliveryCopySettings())
+def test_delivery_copy_formats_payment_links_separately() -> None:
+    text, copied, skipped = format_deliveries(
+        [_delivery()], DeliveryCopySettings(), "payment_links"
+    )
 
     assert copied == 1
     assert skipped == 0
+    assert text == "第一个\nhttps://pay.example.com/checkout"
+
+
+def test_delivery_copy_formats_account_info_separately() -> None:
+    text, copied, skipped = format_deliveries(
+        [_delivery()], DeliveryCopySettings(), "account_info"
+    )
+    assert copied == 1
+    assert skipped == 0
     assert text == (
-        "第一个\n"
-        "https://pay.example.com/checkout\n"
         "user@example.com --- https://mail.example.com/inbox --- "
         "known-password --- JBSWY3DPEHPK3PXP"
     )
@@ -39,9 +51,25 @@ def test_delivery_copy_formats_link_and_corresponding_account() -> None:
 
 def test_delivery_copy_skips_items_without_payment_link() -> None:
     text, copied, skipped = format_deliveries(
-        [_delivery(payment_url=None, deliverable=False)], DeliveryCopySettings()
+        [_delivery(payment_url=None, deliverable=False)],
+        DeliveryCopySettings(),
+        "payment_links",
     )
 
     assert text == ""
     assert copied == 0
     assert skipped == 1
+
+
+def test_delivery_copy_rejects_mixed_payment_and_account_fields() -> None:
+    with pytest.raises(ValidationError, match="支付链接配置只能包含支付链接字段"):
+        DeliveryCopySettings.model_validate(
+            {
+                "payment_links": {
+                    "rows": [{"fields": ["payment_url", "email"]}],
+                },
+                "account_info": {
+                    "rows": [{"fields": ["email"]}],
+                },
+            }
+        )
