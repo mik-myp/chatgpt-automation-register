@@ -452,3 +452,114 @@ def test_kakao_candidates_exclude_accounts_in_active_kakao_runs(
     assert response.status_code == 200
     assert [item["email"] for item in response.json()["items"]] == [available.email]
     assert response.json()["items"][0]["eligibility_state"] == "eligible"
+
+
+def test_kakao_candidates_exclude_completed_and_historical_extractions(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    available = Credential(
+        email="candidate-available@example.com",
+        access_token="available-token",
+        metadata_json={},
+    )
+    marked = Credential(
+        email="candidate-marked@example.com",
+        access_token="marked-token",
+        metadata_json={"kakao_extraction": {"completed": True}},
+    )
+    historical = Credential(
+        email="candidate-history@example.com",
+        access_token="history-token",
+        metadata_json={},
+    )
+    legacy = Credential(
+        email="candidate-legacy@example.com",
+        access_token="legacy-token",
+        metadata_json={},
+    )
+    db_session.add_all([available, marked, historical, legacy])
+    db_session.flush()
+    db_session.add_all(
+        [
+            KakaoTask(
+                upstream_job_id="history-payment-link",
+                email=historical.email,
+                status=KakaoTaskStatus.DONE,
+                payment_url="https://pay.example.com/history",
+            ),
+            KakaoTask(
+                upstream_job_id="legacy-payload-link",
+                email=legacy.email,
+                status=KakaoTaskStatus.DONE,
+                upstream_payload={"link": "https://pay.example.com/legacy"},
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/pipelines/runs/kakao-candidates")
+
+    assert response.status_code == 200
+    assert [item["email"] for item in response.json()["items"]] == [available.email]
+
+
+def test_create_kakao_pipeline_rejects_stale_completed_selection(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    email = "stale-kakao-selection@example.com"
+    db_session.add(Credential(email=email, access_token="token", metadata_json={}))
+    db_session.add(
+        KakaoTask(
+            upstream_job_id="stale-selection-link",
+            email=email,
+            status=KakaoTaskStatus.DONE,
+            payment_url="https://pay.example.com/stale",
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/pipelines/runs/kakao-runs", json={"emails": [email]})
+
+    assert response.status_code == 409
+    assert "已生成过 Kakao 支付链接" in response.json()["detail"]
+
+
+def test_registration_kakao_candidates_exclude_completed_extractions(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    available = Credential(
+        email="source-available@example.com",
+        access_token="available-token",
+        metadata_json={},
+    )
+    completed = Credential(
+        email="source-completed@example.com",
+        access_token="completed-token",
+        metadata_json={"kakao_extraction": {"completed": True}},
+    )
+    run = PipelineRun(kind=PipelineRunKind.REGISTRATION, target_count=2)
+    db_session.add_all([available, completed, run])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PipelineItem(
+                pipeline_run_id=run.id,
+                position=0,
+                account_email=available.email,
+            ),
+            PipelineItem(
+                pipeline_run_id=run.id,
+                position=1,
+                account_email=completed.email,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/pipelines/runs/{run.id}/kakao-candidates")
+
+    assert response.status_code == 200
+    assert [item["email"] for item in response.json()["items"]] == [available.email]

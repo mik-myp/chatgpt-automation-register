@@ -20,6 +20,7 @@ from gpt_auto_register.modules.cards.allocator import (
     CardAllocator,
     card_allocation_guard,
 )
+from gpt_auto_register.modules.kakao.state import completed_extraction_emails
 from gpt_auto_register.modules.pipelines.delivery import (
     account_copy_fingerprint,
     format_deliveries,
@@ -126,7 +127,7 @@ def _busy_security_emails(db: DatabaseSession) -> set[str]:
 
 def _busy_kakao_emails(db: DatabaseSession) -> set[str]:
     pipeline_emails = {
-        email
+        str(email).strip().lower()
         for email in db.scalars(
             select(PipelineItem.account_email)
             .join(PipelineRun, PipelineRun.id == PipelineItem.pipeline_run_id)
@@ -140,13 +141,15 @@ def _busy_kakao_emails(db: DatabaseSession) -> set[str]:
         )
         if email
     }
-    task_emails = set(
-        db.scalars(
+    task_emails = {
+        str(email).strip().lower()
+        for email in db.scalars(
             select(KakaoTask.email).where(
                 KakaoTask.status.in_([KakaoTaskStatus.QUEUED, KakaoTaskStatus.EXTRACTING])
             )
         )
-    )
+        if email
+    }
     return pipeline_emails | task_emails
 
 
@@ -176,12 +179,14 @@ def _eligible_kakao_accounts(
 ) -> list[str]:
     credentials = AccountRepository(db).credentials(requested)
     busy_emails = _busy_kakao_emails(db)
+    completed_emails = completed_extraction_emails(db, requested)
     return [
         email
         for email in requested
         if (credential := credentials.get(email)) is not None
         and bool(credential.access_token)
         and email not in busy_emails
+        and email not in completed_emails
         and (allowed_emails is None or email in allowed_emails)
     ]
 
@@ -193,6 +198,12 @@ def _create_kakao_pipeline(
     source_run_id: str | None = None,
     allowed_emails: set[str] | None = None,
 ) -> PipelineRunSummary:
+    completed_emails = completed_extraction_emails(db, requested)
+    if completed_emails:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"所选账号中有 {len(completed_emails)} 个已生成过 Kakao 支付链接，请刷新后重新选择",
+        )
     eligible = _eligible_kakao_accounts(
         db,
         requested,
@@ -201,7 +212,7 @@ def _create_kakao_pipeline(
     if not eligible:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "所选账号正在其他 Kakao 轮次中、缺少 Access Token 或不属于来源轮次",
+            "所选账号正在其他 Kakao 轮次中、缺少 Access Token、不属于来源轮次或已完成提取",
         )
     try:
         with card_allocation_guard():
@@ -433,11 +444,16 @@ def list_global_kakao_pipeline_candidates(
     )
     if search.strip():
         query = query.where(func.lower(Credential.email).like(f"%{search.strip().lower()}%"))
+    credentials = list(db.scalars(query.order_by(Credential.email)))
     busy_emails = _busy_kakao_emails(db)
+    completed_emails = completed_extraction_emails(
+        db, (credential.email for credential in credentials)
+    )
     candidates = [
         _kakao_candidate(credential)
-        for credential in db.scalars(query.order_by(Credential.email))
-        if credential.email not in busy_emails
+        for credential in credentials
+        if credential.email.strip().lower() not in busy_emails
+        and credential.email.strip().lower() not in completed_emails
     ]
     total = len(candidates)
     return KakaoPipelineCandidatePage(
@@ -596,6 +612,7 @@ def list_kakao_pipeline_candidates(
     )
     credentials = AccountRepository(db).credentials(emails)
     busy_emails = _busy_kakao_emails(db)
+    completed_emails = completed_extraction_emails(db, emails)
     return KakaoPipelineCandidateList(
         items=[
             _kakao_candidate(credentials[email])
@@ -603,6 +620,7 @@ def list_kakao_pipeline_candidates(
             if email in credentials
             and credentials[email].access_token
             and email not in busy_emails
+            and email not in completed_emails
         ]
     )
 

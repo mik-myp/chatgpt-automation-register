@@ -258,7 +258,7 @@ export function CreateKakaoPipelineDialog({
                   <TableCell className="h-44 text-center" colSpan={5}>
                     <p className="text-sm font-medium">暂无可创建账号</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      账号需要有效的 Access Token，且不能正在其他 Kakao 轮次中。
+                      账号需要有效的 Access Token，且不能正在其他 Kakao 轮次中或已生成过支付链接。
                     </p>
                   </TableCell>
                 </TableRow>

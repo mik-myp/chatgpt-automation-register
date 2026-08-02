@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
@@ -28,6 +29,7 @@ def kakao_task(db_session: Session) -> Generator[KakaoTask, None, None]:
     card = KakaoCard(batch_id=batch.id, code="KA-TEST", position=0, active=True)
     db_session.add(card)
     db_session.flush()
+    db_session.add(Credential(email="alpha@example.com", access_token="token", metadata_json={}))
     task = KakaoTask(
         upstream_job_id="upstream-1",
         card_id=card.id,
@@ -62,3 +64,40 @@ def test_kakao_task_details_returns_local_and_upstream_state(
     assert payload["local"]["id"] == kakao_task.id
     assert payload["task"]["job_id"] == "upstream-1"
     assert payload["kakao_status"]["payment_status"] == "waiting"
+
+
+def test_kakao_sync_marks_email_when_payment_link_is_generated(
+    client: TestClient,
+    db_session: Session,
+    kakao_task: KakaoTask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        KakaoClient,
+        "task_statuses",
+        lambda _self, _job_ids: {
+            "items": [
+                {
+                    "job_id": kakao_task.upstream_job_id,
+                    "status": "done",
+                    "nicepay_checkout_url": "https://pay.example.com/generated",
+                }
+            ]
+        },
+    )
+
+    response = client.post("/api/kakao/tasks/sync", json={"task_ids": [kakao_task.id]})
+
+    assert response.status_code == 200
+    db_session.expire_all()
+    credential = db_session.get(Credential, kakao_task.email)
+    saved_task = db_session.get(KakaoTask, kakao_task.id)
+    assert credential is not None
+    assert saved_task is not None
+    assert saved_task.payment_url == "https://pay.example.com/generated"
+    extraction = credential.metadata_json["kakao_extraction"]
+    assert extraction["completed"] is True
+    assert extraction["completed_at"]
+    assert extraction["task_id"] == kakao_task.id
+    assert extraction["upstream_job_id"] == kakao_task.upstream_job_id
+    assert extraction["payment_url"] == "https://pay.example.com/generated"

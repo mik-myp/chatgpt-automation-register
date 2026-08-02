@@ -42,7 +42,11 @@ from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import CardAllocator, card_allocation_guard
 from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
-from gpt_auto_register.modules.kakao.state import apply_upstream, synchronized_kakao_state
+from gpt_auto_register.modules.kakao.state import (
+    apply_upstream,
+    completed_extraction_emails,
+    synchronized_kakao_state,
+)
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.runtime_gateway import runtime_call
@@ -883,6 +887,21 @@ class PipelineExecutor:
         if not access_token:
             raise RuntimeError("注册结果缺少 Access Token")
         with SessionLocal() as session:
+            item = session.get(PipelineItem, item_id)
+            email = item.account_email if item is not None else str(credential.get("email") or "")
+            if email and email.strip().lower() in completed_extraction_emails(session, [email]):
+                if item is not None:
+                    item.status = PipelineItemStatus.COMPLETED
+                    item.eligibility_state = "already_extracted"
+                    item.error = None
+                session.commit()
+                _emit(
+                    self.job_id,
+                    "kakao_skipped",
+                    f"Kakao 提取已跳过，邮箱已有支付链接：{email}",
+                    data={"item_id": item_id, "email": email, "reason": "already_extracted"},
+                )
+                return
             settings = SettingsService(session).kakao_internal()
             card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
             if card is None:
@@ -997,8 +1016,8 @@ class PipelineExecutor:
                         card_code_snapshot=card.code,
                         email=item.account_email or "",
                     )
-                    apply_upstream(saved_task, task)
                     session.add(saved_task)
+                    apply_upstream(saved_task, task, session)
             allocation = session.get(
                 PipelineCardAllocation,
                 (self.run_id, card.id),
@@ -1591,7 +1610,7 @@ class WorkerManager:
                     value = by_id.get(task.upstream_job_id)
                     if value is None:
                         continue
-                    apply_upstream(task, value)
+                    apply_upstream(task, value, session)
             session.commit()
 
     def _loop(self) -> None:

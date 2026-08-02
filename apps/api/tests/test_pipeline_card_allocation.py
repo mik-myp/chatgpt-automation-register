@@ -12,6 +12,7 @@ from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
     KakaoTask,
+    KakaoTaskStatus,
     PipelineCardAllocation,
 )
 from gpt_auto_register.db.models.pipeline import (
@@ -167,6 +168,53 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
         assert saved_credential.metadata_json["kakao_pipeline"]["active_duplicate_job_ids"] == [
             "duplicate-job"
         ]
+
+
+def test_kakao_submission_skips_email_with_historical_payment_link(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "already-extracted@example.com"
+    run = PipelineRun(
+        kind=PipelineRunKind.KAKAO,
+        target_count=1,
+        kakao_enabled=True,
+        config_snapshot={},
+    )
+    db_session.add(run)
+    db_session.flush()
+    item = PipelineItem(pipeline_run_id=run.id, position=0, account_email=email)
+    job = Job(id="skip-kakao-job", kind="pipeline.run", payload={})
+    credential = Credential(email=email, access_token="access-token", metadata_json={})
+    historical = KakaoTask(
+        upstream_job_id="already-extracted-task",
+        email=email,
+        status=KakaoTaskStatus.DONE,
+        payment_url="https://pay.example.com/already-extracted",
+    )
+    db_session.add_all([item, job, credential, historical])
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(manager, "SessionLocal", factory)
+
+    def unexpected_call(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("已完成 Kakao 提取的邮箱不应再次调用上游")
+
+    monkeypatch.setattr(KakaoClient, "check_eligibility", unexpected_call)
+    monkeypatch.setattr(KakaoClient, "create_tasks", unexpected_call)
+
+    manager.PipelineExecutor(job.id, run.id)._run_kakao(
+        item.id,
+        {"email": email, "access_token": "access-token"},
+        "unused-card",
+    )
+
+    with factory() as session:
+        saved_item = session.get(PipelineItem, item.id)
+        assert saved_item is not None
+        assert saved_item.status == PipelineItemStatus.COMPLETED
+        assert saved_item.eligibility_state == "already_extracted"
 
 
 def test_kakao_pipeline_executes_existing_credentials(

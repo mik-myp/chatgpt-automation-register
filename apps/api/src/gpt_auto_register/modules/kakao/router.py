@@ -8,12 +8,7 @@ from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
-from gpt_auto_register.modules.kakao.client import (
-    KakaoApiError,
-    KakaoClient,
-    canonical_payment_url,
-    payload_tasks,
-)
+from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient, payload_tasks
 from gpt_auto_register.modules.kakao.repository import KakaoTaskRepository
 from gpt_auto_register.modules.kakao.schemas import (
     KakaoEligibilityItem,
@@ -28,6 +23,8 @@ from gpt_auto_register.modules.kakao.state import (
     apply_payment,
     apply_retry,
     apply_upstream,
+    completed_extraction_emails,
+    mark_extraction_completed,
     synchronized_kakao_state,
 )
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
@@ -69,9 +66,7 @@ def list_kakao_tasks(
     )
     changed = False
     for item in items:
-        if not item.payment_url:
-            item.payment_url = canonical_payment_url(item.upstream_payload or {}) or None
-            changed = changed or bool(item.payment_url)
+        changed = mark_extraction_completed(db, item) or changed
     if changed:
         db.commit()
     return KakaoTaskListResponse(
@@ -171,7 +166,7 @@ def sync_kakao_tasks(
                 if value is None:
                     failed += 1
                     continue
-                apply_upstream(task, value)
+                apply_upstream(task, value, db)
                 processed += 1
         except KakaoApiError:
             failed += len(group)
@@ -210,7 +205,7 @@ def sync_kakao_payment_statuses(
         if isinstance(value, KakaoApiError) or not isinstance(value, dict):
             failed += 1
             continue
-        apply_payment(task, value)
+        apply_payment(task, value, db)
         processed += 1
     db.commit()
     return KakaoTaskActionResponse(processed=processed, failed=failed)
@@ -240,13 +235,13 @@ def get_kakao_task_details(task_id: str, db: DatabaseSession) -> object:
     try:
         detail = client.task_detail(task.upstream_job_id)
         if isinstance(detail, dict):
-            apply_upstream(task, detail)
+            apply_upstream(task, detail, db)
     except KakaoApiError as error:
         detail_error = str(error)
     try:
         kakao_status = client.kakao_status(task.upstream_job_id)
         if isinstance(kakao_status, dict):
-            apply_payment(task, kakao_status)
+            apply_payment(task, kakao_status, db)
     except KakaoApiError as error:
         kakao_error = str(error)
     db.commit()
@@ -268,7 +263,7 @@ def cancel_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespo
     try:
         payload = _client(db).cancel_task(task.upstream_job_id)
         values = payload_tasks(payload)
-        apply_upstream(task, values[0] if values else {"status": "canceled"})
+        apply_upstream(task, values[0] if values else {"status": "canceled"}, db)
         db.commit()
         return KakaoTaskActionResponse(processed=1)
     except KakaoApiError as error:
@@ -281,10 +276,12 @@ def retry_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespon
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kakao 任务不存在")
+    if task.email.strip().lower() in completed_extraction_emails(db, [task.email]):
+        raise HTTPException(status.HTTP_409_CONFLICT, "该邮箱已生成过 Kakao 支付链接")
     try:
         payload = _client(db).retry_task(task.upstream_job_id)
         values = payload_tasks(payload)
-        apply_retry(task, values[0] if values else {"status": "queued"})
+        apply_retry(task, values[0] if values else {"status": "queued"}, db)
         db.commit()
         return KakaoTaskActionResponse(processed=1)
     except KakaoApiError as error:

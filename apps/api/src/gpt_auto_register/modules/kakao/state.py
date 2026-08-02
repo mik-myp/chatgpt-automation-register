@@ -1,8 +1,13 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Any
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from gpt_auto_register.db.base import utc_now
+from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
 from gpt_auto_register.modules.kakao.client import (
     canonical_payment_url,
@@ -10,6 +15,7 @@ from gpt_auto_register.modules.kakao.client import (
 )
 
 _KAKAO_STATE_LOCK = threading.RLock()
+_EXTRACTION_METADATA_KEY = "kakao_extraction"
 
 
 def synchronized_kakao_state[**P, R](function: Callable[P, R]) -> Callable[P, R]:
@@ -74,7 +80,72 @@ def _advance_payment_status(task: KakaoTask, incoming: str) -> bool:
     return True
 
 
-def apply_upstream(task: KakaoTask, value: dict[str, Any]) -> None:
+def completed_extraction_emails(
+    session: Session,
+    emails: Iterable[str] | None = None,
+) -> set[str]:
+    requested = (
+        {str(email).strip().lower() for email in emails if str(email).strip()}
+        if emails is not None
+        else None
+    )
+    credential_query = select(Credential)
+    task_query = select(KakaoTask)
+    if requested is not None:
+        if not requested:
+            return set()
+        credential_query = credential_query.where(func.lower(Credential.email).in_(requested))
+        task_query = task_query.where(func.lower(KakaoTask.email).in_(requested))
+
+    completed: set[str] = set()
+    for credential in session.scalars(credential_query):
+        metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
+        extraction = metadata.get(_EXTRACTION_METADATA_KEY)
+        if isinstance(extraction, dict) and extraction.get("completed") is True:
+            completed.add(credential.email.strip().lower())
+    for task in session.scalars(task_query):
+        if str(task.payment_url or "").strip() or canonical_payment_url(
+            task.upstream_payload or {}
+        ):
+            completed.add(task.email.strip().lower())
+    return completed
+
+
+def mark_extraction_completed(session: Session, task: KakaoTask) -> bool:
+    payment_url = str(task.payment_url or "").strip() or canonical_payment_url(
+        task.upstream_payload or {}
+    )
+    if not payment_url:
+        return False
+
+    changed = task.payment_url != payment_url
+    task.payment_url = payment_url
+    credential = session.get(Credential, task.email.strip().lower())
+    if credential is None:
+        return changed
+
+    metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
+    current = metadata.get(_EXTRACTION_METADATA_KEY)
+    current = current if isinstance(current, dict) else {}
+    extraction = {
+        **current,
+        "completed": True,
+        "completed_at": str(current.get("completed_at") or utc_now().isoformat()),
+        "task_id": str(task.id or task.upstream_job_id),
+        "upstream_job_id": task.upstream_job_id,
+        "payment_url": payment_url,
+    }
+    if current != extraction:
+        credential.metadata_json = {**metadata, _EXTRACTION_METADATA_KEY: extraction}
+        changed = True
+    return changed
+
+
+def apply_upstream(
+    task: KakaoTask,
+    value: dict[str, Any],
+    session: Session | None = None,
+) -> None:
     task_advanced = _advance_task_status(task, task_status(value.get("status")))
     normalized = normalized_payment_state(value)
     payment_status = str(normalized["status"] or value.get("payment_status") or "")
@@ -91,20 +162,32 @@ def apply_upstream(task: KakaoTask, value: dict[str, Any]) -> None:
     task.error = str(value.get("error") or "") or task.error
     if task_advanced or payment_advanced or not task.upstream_payload:
         task.upstream_payload = value
+    if session is not None:
+        mark_extraction_completed(session, task)
 
 
-def apply_payment(task: KakaoTask, value: dict[str, Any]) -> None:
+def apply_payment(
+    task: KakaoTask,
+    value: dict[str, Any],
+    session: Session | None = None,
+) -> None:
     normalized = normalized_payment_state(value)
-    if not _advance_payment_status(task, str(normalized["status"] or "")):
-        return
-    task.payment_message = str(normalized["message"] or "") or task.payment_message
-    task.payment_expires_at = normalized["expires_at"] or task.payment_expires_at
-    task.payment_scanned = bool(task.payment_scanned or normalized["scanned"])
-    task.payment_successful = bool(task.payment_successful or normalized["successful"])
-    task.upstream_payload = {**(task.upstream_payload or {}), "kakao_status": value}
+    if _advance_payment_status(task, str(normalized["status"] or "")):
+        task.payment_message = str(normalized["message"] or "") or task.payment_message
+        task.payment_expires_at = normalized["expires_at"] or task.payment_expires_at
+        task.payment_scanned = bool(task.payment_scanned or normalized["scanned"])
+        task.payment_successful = bool(task.payment_successful or normalized["successful"])
+        task.upstream_payload = {**(task.upstream_payload or {}), "kakao_status": value}
+    task.payment_url = canonical_payment_url(value) or task.payment_url
+    if session is not None:
+        mark_extraction_completed(session, task)
 
 
-def apply_retry(task: KakaoTask, value: dict[str, Any]) -> None:
+def apply_retry(
+    task: KakaoTask,
+    value: dict[str, Any],
+    session: Session | None = None,
+) -> None:
     task.status = KakaoTaskStatus.QUEUED
     task.payment_status = None
     task.payment_message = None
@@ -112,4 +195,4 @@ def apply_retry(task: KakaoTask, value: dict[str, Any]) -> None:
     task.payment_scanned = False
     task.payment_successful = False
     task.error = None
-    apply_upstream(task, value)
+    apply_upstream(task, value, session)
