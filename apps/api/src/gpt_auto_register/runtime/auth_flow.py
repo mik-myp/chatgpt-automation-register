@@ -110,6 +110,17 @@ class AuthFlow:
             f"screen={self._fingerprint['screen']} lang={self._fingerprint['lang']} "
             f"ua={self._ua}"
         )
+        if self._trace_dump_enabled:
+            try:
+                os.makedirs("outputs", exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                self._trace_dump_path = os.path.join(
+                    "outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl"
+                )
+                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
+            except Exception as e:
+                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
+                self._trace_dump_enabled = False
 
     def _build_chatgpt_cookie_header(self) -> str:
         """
@@ -125,10 +136,7 @@ class AuthFlow:
         cookie_pairs: list[tuple[str, str]] = []
         seen: set[str] = set()
 
-        try:
-            jar_iter = list(self.session.cookies)
-        except Exception:
-            jar_iter = []
+        jar_iter = self._session_cookie_objects()
 
         for cookie in jar_iter:
             try:
@@ -187,15 +195,15 @@ class AuthFlow:
                 cookie_pairs.append((name, value))
 
         return "; ".join(f"{name}={value}" for name, value in cookie_pairs if name and value)
-        if self._trace_dump_enabled:
-            try:
-                os.makedirs("outputs", exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                self._trace_dump_path = os.path.join("outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl")
-                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
-            except Exception as e:
-                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
-                self._trace_dump_enabled = False
+
+    def _session_cookie_objects(self) -> list[Any]:
+        """Return complete cookie objects across curl_cffi versions."""
+        container = self.session.cookies
+        jar = getattr(container, "jar", None)
+        try:
+            return list(jar if jar is not None else container)
+        except Exception:
+            return []
 
     def _trace_http(self, step: str, resp, extra_request: dict | None = None):
         """可选 HTTP 细粒度追踪（用于协议调试）"""
@@ -2439,7 +2447,7 @@ class AuthFlow:
             pass
         # 路径2：遍历 jar
         try:
-            for c in self.session.cookies:
+            for c in self._session_cookie_objects():
                 name = getattr(c, "name", "") if hasattr(c, "name") else str(c)
                 if name == target:
                     val = getattr(c, "value", "") or ""

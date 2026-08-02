@@ -181,6 +181,7 @@ def get_sentinel_token_via_quickjs(
     sec_ch_ua_bitness: str = "",
     sec_ch_ua_model: str = "",
     sec_ch_ua_platform_version: str = "",
+    require_so_token: bool = True,
 ) -> Optional[tuple[str, str]]:
     """Try the QuickJS path. Return JSON string on success, None on any failure.
 
@@ -295,6 +296,9 @@ def get_sentinel_token_via_quickjs(
             log(f"Sentinel QuickJS OK (len={len(sdk_token)}, so=Y)")
             return (sdk_token, so_token_raw)
         if sdk_token:
+            if not require_so_token:
+                log(f"Sentinel QuickJS OK (len={len(sdk_token)}, so=N)")
+                return (sdk_token, "")
             log("Sentinel QuickJS 失败: 主 token 有但 SO token 为空，中止以避免封号")
         else:
             log("Sentinel QuickJS 失败: SDK token 为空，中止以避免封号")

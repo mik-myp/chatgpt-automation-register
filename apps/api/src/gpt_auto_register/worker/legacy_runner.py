@@ -261,6 +261,7 @@ def _export_test(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _verify_mfa(payload: dict[str, Any]) -> dict[str, Any]:
+    from account_security import verify_authenticator_mfa
     from auth_flow import AuthFlow
     from config import Config
 
@@ -271,32 +272,23 @@ def _verify_mfa(payload: dict[str, Any]) -> dict[str, Any]:
         name, separator, value = part.strip().partition("=")
         if separator and name and value:
             flow.session.cookies.set(name, value, domain="chatgpt.com")
-    response = flow.session.get(
-        "https://chatgpt.com/api/auth/session",
-        headers=flow._common_headers("https://chatgpt.com/"),
-        timeout=30,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"验证 MFA 会话失败: HTTP {response.status_code}")
-    data = response.json()
-    user = data.get("user") if isinstance(data, dict) and isinstance(data.get("user"), dict) else {}
-    if user.get("mfa") is not True:
-        raise RuntimeError("服务端会话未确认 Authenticator App MFA 已启用")
+    if not verify_authenticator_mfa(flow):
+        raise RuntimeError("服务端安全设置未确认 Authenticator App MFA 已启用")
     return {"ok": True, "verified": True}
 
 
-def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
-    from account_security import enable_authenticator_mfa
+def _security_context(payload: dict[str, Any]) -> tuple[Any, Any]:
     from auth_flow import AuthFlow
     from config import Config
 
     account = payload["account"]
     credential = payload["credential"]
-    options = payload.get("registration", {})
     mail_options = payload.get("mail", {})
+    options = payload.get("registration", {})
     flow = AuthFlow(Config(proxy=str(options.get("proxy") or "").strip() or None))
     flow.result.email = str(account.get("email") or "")
     flow.result.device_id = str(credential.get("device_id") or "")
+    flow.result.password = str(credential.get("password") or "")
     for part in str(credential.get("cookie_header") or "").split(";"):
         name, separator, value = part.strip().partition("=")
         if separator and name and value:
@@ -304,7 +296,7 @@ def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
     if mail_options.get("source") == "cf_temp":
         from mail_cf import CFTempEmailProvider
 
-        mail_provider = CFTempEmailProvider(
+        mail = CFTempEmailProvider(
             api_url=str(mail_options.get("cf_api_url") or ""),
             admin_token=str(mail_options.get("cf_admin_token") or ""),
             domain=str(mail_options.get("cf_domain") or ""),
@@ -312,32 +304,85 @@ def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
     elif account.get("mail_type") == "link":
         from mail_link import LinkMailProvider
 
-        mail_provider = LinkMailProvider(
+        mail = LinkMailProvider(
             email=flow.result.email,
             mail_url=str(account.get("mail_url") or ""),
         )
     else:
         from mail_outlook import OutlookMailProvider
 
-        mail_provider = OutlookMailProvider(
+        mail = OutlookMailProvider(
             email=flow.result.email,
             password=str(account.get("password") or ""),
             client_id=str(account.get("client_id") or ""),
             refresh_token=str(account.get("refresh_token") or ""),
         )
-    secret = enable_authenticator_mfa(
-        flow,
-        mail_provider,
-        email=flow.result.email,
-        otp_timeout=int(options.get("mfa_otp_timeout") or 180),
-    )
+    return flow, mail
+
+
+def _flow_session_credential(flow: Any) -> dict[str, str]:
+    builder = getattr(flow, "_build_chatgpt_cookie_header", None)
+    cookie_header = str(builder() if callable(builder) else flow.result.cookie_header or "")
+    return {
+        "access_token": str(flow.result.access_token or ""),
+        "session_token": str(flow.result.session_token or ""),
+        "device_id": str(flow.result.device_id or ""),
+        "cookie_header": cookie_header,
+    }
+
+
+def _enable_mfa(payload: dict[str, Any]) -> dict[str, Any]:
+    from account_security import enable_authenticator_mfa
+
+    options = payload.get("registration", {})
+    flow, mail_provider = _security_context(payload)
+    try:
+        secret = enable_authenticator_mfa(
+            flow,
+            mail_provider,
+            email=flow.result.email,
+            otp_timeout=int(options.get("mfa_otp_timeout") or 180),
+        )
+    except Exception as error:
+        return {"ok": False, "error": str(error), "credential": _flow_session_credential(flow)}
     return {
         "ok": True,
         "credential": {
-            "device_id": flow.result.device_id,
-            "cookie_header": flow.result.cookie_header,
+            **_flow_session_credential(flow),
             "totp_secret": secret,
             "security": {"mfa": {"requested": True, "status": "enabled", "error": ""}},
+        },
+    }
+
+
+def _set_password(payload: dict[str, Any]) -> dict[str, Any]:
+    from account_security import set_account_password
+
+    account = payload["account"]
+    options = payload.get("registration", {})
+    flow, mail_provider = _security_context(payload)
+    mode = str(options.get("password_mode") or "random")
+    password = str(options.get("fixed_password") or "")
+    if mode == "random":
+        password = flow._random_password(20)
+    if not password:
+        raise RuntimeError("系统设置中没有可用的 ChatGPT 密码")
+    try:
+        set_account_password(
+            flow,
+            mail_provider,
+            email=str(account.get("email") or ""),
+            password=password,
+            otp_timeout=int(options.get("mfa_otp_timeout") or 180),
+        )
+    except Exception as error:
+        return {"ok": False, "error": str(error), "credential": _flow_session_credential(flow)}
+    return {
+        "ok": True,
+        "credential": {
+            **_flow_session_credential(flow),
+            "password": password,
+            "security": {"password": {"requested": True, "status": "set", "error": ""}},
         },
     }
 
@@ -369,6 +414,8 @@ def main() -> None:
             result = _verify_mfa(payload)
         elif action == "enable_mfa":
             result = _enable_mfa(payload)
+        elif action == "set_password":
+            result = _set_password(payload)
         else:
             raise RuntimeError(f"不支持的旧运行时操作: {action}")
     except Exception as error:

@@ -41,6 +41,7 @@ def get_sentinel_token(
     browser_type: str = "",
     navigator_platform: str = "",
     navigator_vendor: str | None = None,
+    require_so_token: bool = True,
     hardware_concurrency: int = 0,
     device_memory: int | None = None,
     max_touch_points: int = 0,
@@ -72,10 +73,12 @@ def get_sentinel_token(
             sec_ch_ua_bitness=sec_ch_ua_bitness,
             sec_ch_ua_model=sec_ch_ua_model,
             sec_ch_ua_platform_version=sec_ch_ua_platform_version,
+            require_so_token=require_so_token,
         )
         if qresult:
             return qresult
-        raise RuntimeError("Sentinel QuickJS 失败（无 SO token），中止注册以避免封号")
+        suffix = "（无 SO token）" if require_so_token else ""
+        raise RuntimeError(f"Sentinel QuickJS 失败{suffix}，中止当前操作")
     except ImportError as e:
         raise RuntimeError(f"Sentinel QuickJS 模块缺失: {e}")
     except RuntimeError:

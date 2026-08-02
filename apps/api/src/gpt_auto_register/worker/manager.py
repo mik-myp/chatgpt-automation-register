@@ -890,29 +890,27 @@ class AccountSecurityExecutor:
             credential = session.get(Credential, email)
             if account is None or credential is None:
                 raise RuntimeError("账号缺少邮箱或 ChatGPT 凭据")
-            if self.action == "set_password":
-                self._record(
-                    email,
-                    "unsupported",
-                    "尚未确认 OpenAI 已注册账号的改密协议，请使用官方密码重置流程",
-                )
-                return
             registration = SettingsService(session).registration_internal().model_dump()
-            registration.update(password_mode="none", enable_authenticator_mfa=True)
+            if self.action == "enable_mfa":
+                registration.update(password_mode="none", enable_authenticator_mfa=True)
+            elif registration.get("password_mode") == "none":
+                registration["password_mode"] = "random"
             mail = SettingsService(session).mail_internal()
             account_data = _account_payload(account)
             credential_data = {
+                "password": credential.password or "",
                 "device_id": credential.device_id or "",
                 "cookie_header": credential.cookie_header or "",
             }
             has_totp_secret = bool(credential.totp_secret)
+        operation_label = "设置 ChatGPT 密码" if self.action == "set_password" else "启用或验证 MFA"
         _emit(
             self.job_id,
             "account_security_started",
-            f"开始启用或验证 MFA {email}",
+            f"开始{operation_label} {email}",
             data={"email": email, "action": self.action},
         )
-        if has_totp_secret:
+        if self.action == "enable_mfa" and has_totp_secret:
             result = _legacy_call(
                 {
                     "action": "verify_mfa",
@@ -934,7 +932,7 @@ class AccountSecurityExecutor:
             return
         result = _legacy_call(
             {
-                "action": "enable_mfa",
+                "action": self.action,
                 "account": account_data,
                 "credential": credential_data,
                 "registration": registration,
@@ -942,13 +940,18 @@ class AccountSecurityExecutor:
             },
             job_id=self.job_id,
         )
+        value = dict(result.get("credential") or {})
+        self._persist_session(email, value)
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or "MFA 操作失败"))
-        value = dict(result.get("credential") or {})
         security = value.get("security") if isinstance(value.get("security"), dict) else {}
-        mfa = security.get("mfa") if isinstance(security, dict) else {}
-        if not isinstance(mfa, dict) or mfa.get("status") != "enabled":
-            raise RuntimeError(str((mfa or {}).get("error") or "MFA 未由服务端确认启用"))
+        security_key = "password" if self.action == "set_password" else "mfa"
+        expected_status = "set" if self.action == "set_password" else "enabled"
+        outcome = security.get(security_key) if isinstance(security, dict) else {}
+        if not isinstance(outcome, dict) or outcome.get("status") != expected_status:
+            raise RuntimeError(
+                str((outcome or {}).get("error") or f"{operation_label}未由服务端确认")
+            )
         with SessionLocal() as session:
             credential = session.get(Credential, email)
             if credential is None:
@@ -965,18 +968,20 @@ class AccountSecurityExecutor:
                     setattr(credential, field, value[field])
             if value.get("totp_secret"):
                 credential.totp_secret = value["totp_secret"]
+            if value.get("password"):
+                credential.password = value["password"]
             credential.metadata_json = {
                 **(credential.metadata_json or {}),
                 "account_security": {
                     **dict((credential.metadata_json or {}).get("account_security") or {}),
-                    "mfa": mfa,
+                    security_key: outcome,
                 },
             }
             session.commit()
         _emit(
             self.job_id,
             "account_security_succeeded",
-            f"MFA 已启用并验证 {email}",
+            f"{operation_label}成功并验证 {email}",
             data={"email": email, "action": self.action},
         )
 
@@ -995,6 +1000,20 @@ class AccountSecurityExecutor:
             }
             credential.metadata_json = {**metadata, "account_security": security}
             session.commit()
+
+    @staticmethod
+    def _persist_session(email: str, value: dict[str, Any]) -> None:
+        with SessionLocal() as session:
+            credential = session.get(Credential, email)
+            if credential is None:
+                return
+            changed = False
+            for field in ("access_token", "session_token", "device_id", "cookie_header"):
+                if value.get(field):
+                    setattr(credential, field, value[field])
+                    changed = True
+            if changed:
+                session.commit()
 
 
 class WorkerManager:
@@ -1149,7 +1168,12 @@ class WorkerManager:
             try:
                 if job.kind == "account.security":
                     result = AccountSecurityExecutor(job.id, job.payload).execute()
-                    self._finish(job.id, result=result)
+                    failed = int(result.get("failed") or 0)
+                    self._finish(
+                        job.id,
+                        result=result,
+                        error=f"{failed} 个账号安全操作失败" if failed else None,
+                    )
                     continue
                 run_id = str(job.payload.get("pipeline_run_id") or "")
                 retry_item_ids = job.payload.get("retry_item_ids")
