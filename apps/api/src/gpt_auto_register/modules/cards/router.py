@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 
 from gpt_auto_register.api.dependencies import DatabaseSession
+from gpt_auto_register.core.text_import import import_content_lines
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
 from gpt_auto_register.modules.cards.repository import CardRepository
@@ -78,13 +79,7 @@ def get_card_stats(db: DatabaseSession) -> CardInventoryStats:
 
 @router.post("/import", response_model=ImportCardsResponse)
 def import_cards(request: ImportCardsRequest, db: DatabaseSession) -> ImportCardsResponse:
-    codes = list(
-        dict.fromkeys(
-            line.strip()
-            for line in request.text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-    )
+    codes = list(dict.fromkeys(line for _, line in import_content_lines(request.text)))
     repository = CardRepository(db)
     _, inserted, duplicates = repository.import_cards(codes, "")
     db.commit()

@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from gpt_auto_register.core.text_import import import_content_lines
 from gpt_auto_register.db.models.accounts import MailType
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -73,10 +74,7 @@ def parse_accounts(text: str) -> ParseResult:
     accounts_by_email: dict[str, ParsedAccount] = {}
     invalid_lines: list[int] = []
 
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line_number, line in import_content_lines(text):
         account = parse_account_line(line)
         if account is None:
             invalid_lines.append(line_number)

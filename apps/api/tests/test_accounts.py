@@ -36,6 +36,24 @@ def test_import_list_and_stats(client: TestClient) -> None:
     assert "refresh_token" not in payload["items"][0]
 
 
+def test_import_accounts_accepts_wrapped_copy_text(client: TestClient) -> None:
+    response = client.post(
+        "/api/accounts/import",
+        json={
+            "text": (f"\ufeff=== 使用说明 ===\n看购买说明页\n\n=== 卡密内容 ===\n{LINK_ACCOUNT}\n")
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "inserted": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "invalid": 0,
+        "invalid_lines": [],
+    }
+
+
 def test_claim_release_and_state_guards(client: TestClient) -> None:
     client.post("/api/accounts/import", json={"text": OUTLOOK_ACCOUNT})
 

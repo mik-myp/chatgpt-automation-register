@@ -4,8 +4,10 @@ import { Upload } from "lucide-react"
 import { toast } from "sonner"
 
 import { useImportCardsApiKakaoCardsImportPost } from "@/api/generated"
+import { TextFileImportField } from "@/components/text-file-import-field"
 import { refreshCardQueries } from "@/features/cards/lib/card-queries"
 import { ApiError } from "@/lib/api-client"
+import { importEntryCount, normalizeImportText } from "@/lib/text-import"
 import { Button } from "@workspace/ui/components/button"
 import {
   Dialog,
@@ -16,7 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@workspace/ui/components/dialog"
-import { Textarea } from "@workspace/ui/components/textarea"
 
 export function ImportCardsDialog({
   open,
@@ -27,6 +28,7 @@ export function ImportCardsDialog({
 }) {
   const queryClient = useQueryClient()
   const [text, setText] = useState("")
+  const entryCount = importEntryCount(text)
   const mutation = useImportCardsApiKakaoCardsImportPost<ApiError>({
     mutation: {
       onSuccess: (result) => {
@@ -46,13 +48,15 @@ export function ImportCardsDialog({
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>导入卡密</DialogTitle>
-          <DialogDescription>重复卡密会自动跳过。</DialogDescription>
+          <DialogDescription>
+            选择文件或直接粘贴，重复卡密自动跳过。
+          </DialogDescription>
         </DialogHeader>
-        <Textarea
-          aria-label="卡密列表"
-          className="min-h-72 resize-y font-mono text-xs"
-          onChange={(event) => setText(event.target.value)}
-          placeholder="KA-XXXX-XXXX"
+        <TextFileImportField
+          fileLabel="选择卡密导入文件"
+          onValueChange={setText}
+          placeholder="直接粘贴卡密内容"
+          textareaLabel="卡密内容"
           value={text}
         />
         <DialogFooter>
@@ -60,11 +64,13 @@ export function ImportCardsDialog({
             <Button variant="outline">取消</Button>
           </DialogClose>
           <Button
-            disabled={!text.trim() || mutation.isPending}
-            onClick={() => mutation.mutate({ data: { text } })}
+            disabled={!entryCount || mutation.isPending}
+            onClick={() =>
+              mutation.mutate({ data: { text: normalizeImportText(text) } })
+            }
           >
             <Upload />
-            {mutation.isPending ? "正在导入" : "导入卡密"}
+            {mutation.isPending ? "正在导入" : `导入卡密（${entryCount}）`}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -87,7 +87,7 @@ export function AccountsPage() {
         <h1 className="text-xl font-semibold">邮箱号池</h1>
         <Button onClick={() => setImportOpen(true)}>
           <Upload />
-          导入账号
+          导入邮箱
         </Button>
       </div>
 

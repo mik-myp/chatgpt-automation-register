@@ -25,7 +25,9 @@ import {
   useReleaseAccountApiAccountsEmailReleasePost,
   useResetAccountApiAccountsEmailResetPost,
 } from "@/api/generated"
+import { TextFileImportField } from "@/components/text-file-import-field"
 import { ApiError } from "@/lib/api-client"
+import { importEntryCount, normalizeImportText } from "@/lib/text-import"
 import { useAccountsStore } from "@/stores/accounts-store"
 import {
   AlertDialog,
@@ -54,7 +56,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu"
-import { Textarea } from "@workspace/ui/components/textarea"
 import {
   Tooltip,
   TooltipContent,
@@ -319,6 +320,7 @@ export function ImportDialog() {
   const [text, setText] = useState("")
   const open = useAccountsStore((state) => state.importOpen)
   const setOpen = useAccountsStore((state) => state.setImportOpen)
+  const entryCount = importEntryCount(text)
   const mutation = useImportAccountsApiAccountsImportPost<ApiError>({
     mutation: {
       onSuccess: (result) => {
@@ -340,17 +342,14 @@ export function ImportDialog() {
         <DialogHeader>
           <DialogTitle>导入邮箱账号</DialogTitle>
           <DialogDescription>
-            新账号加入可用号池，重复邮箱保留当前状态。
+            选择文件或直接粘贴，重复邮箱保留当前状态。
           </DialogDescription>
         </DialogHeader>
-        <Textarea
-          aria-label="账号文本"
-          autoFocus
-          className="field-sizing-fixed h-72 max-h-[calc(100svh-14rem)] resize-none overflow-y-auto font-mono text-xs leading-5"
-          onChange={(event) => setText(event.target.value)}
-          placeholder={
-            "email----password----client_id----refresh_token\nemail---https://mail.example.com/link"
-          }
+        <TextFileImportField
+          fileLabel="选择邮箱导入文件"
+          onValueChange={setText}
+          placeholder="直接粘贴邮箱内容"
+          textareaLabel="邮箱内容"
           value={text}
         />
         <DialogFooter>
@@ -358,11 +357,13 @@ export function ImportDialog() {
             <Button variant="outline">取消</Button>
           </DialogClose>
           <Button
-            disabled={!text.trim() || mutation.isPending}
-            onClick={() => mutation.mutate({ data: { text } })}
+            disabled={!entryCount || mutation.isPending}
+            onClick={() =>
+              mutation.mutate({ data: { text: normalizeImportText(text) } })
+            }
           >
             <Upload />
-            {mutation.isPending ? "正在导入" : "导入账号"}
+            {mutation.isPending ? "正在导入" : `导入邮箱（${entryCount}）`}
           </Button>
         </DialogFooter>
       </DialogContent>
