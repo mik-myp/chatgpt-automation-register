@@ -12,6 +12,7 @@ OpenAI Sentinel Token 生成入口。
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ DEFAULT_UA = (
 
 
 def get_sentinel_token(
-    session,
+    session: Any,
     device_id: str,
     flow: str = "authorize_continue",
     user_agent: str = DEFAULT_UA,
@@ -75,13 +76,13 @@ def get_sentinel_token(
             sec_ch_ua_platform_version=sec_ch_ua_platform_version,
             require_so_token=require_so_token,
         )
-        if qresult:
-            return qresult
+        if isinstance(qresult, (tuple, list)) and len(qresult) == 2:
+            return str(qresult[0]), str(qresult[1])
         suffix = "（无 SO token）" if require_so_token else ""
         raise RuntimeError(f"Sentinel QuickJS 失败{suffix}，中止当前操作")
     except ImportError as e:
-        raise RuntimeError(f"Sentinel QuickJS 模块缺失: {e}")
+        raise RuntimeError(f"Sentinel QuickJS 模块缺失: {e}") from e
     except RuntimeError:
         raise
     except Exception as e:
-        raise RuntimeError(f"Sentinel QuickJS 异常: {e}")
+        raise RuntimeError(f"Sentinel QuickJS 异常: {e}") from e

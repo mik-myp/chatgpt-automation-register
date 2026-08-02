@@ -34,7 +34,15 @@ import {
   type PipelineDeliverySummary,
 } from "@/api/generated"
 import { ApiError, apiRequest } from "@/lib/api-client"
+import {
+  isTerminalPaymentStatus,
+  paymentStatusLabel,
+} from "@/lib/kakao-status"
 import { StatusBadge } from "@/components/status-badge"
+import {
+  RuntimeEventLog,
+  type RuntimeEvent,
+} from "@/components/pipelines/runtime-event-log"
 import { TablePagination } from "@/components/table-pagination"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
@@ -697,15 +705,7 @@ export function PipelineRunPage() {
     queryKey: ["/api/pipelines/runs", runId, "events"],
     queryFn: () =>
       apiRequest<{
-        items: Array<{
-          id: number
-          sequence: number
-          level: string
-          event_type: string
-          message: string
-          data: Record<string, unknown>
-          created_at: string
-        }>
+        items: RuntimeEvent[]
         last_sequence: number
         terminal: boolean
       }>(`/api/pipelines/runs/${encodeURIComponent(runId)}/events?limit=500`),
@@ -742,9 +742,7 @@ export function PipelineRunPage() {
     (item) =>
       item.task_status === "done" &&
       Boolean(item.payment_url) &&
-      !["succeeded", "failed", "canceled", "expired"].includes(
-        item.payment_status ?? ""
-      )
+      !isTerminalPaymentStatus(item.payment_status)
   )
   useQuery({
     queryKey: ["/api/kakao/tasks/payment-sync", runId],
@@ -1174,17 +1172,7 @@ export function PipelineRunPage() {
                     <TableCell>
                       <StatusBadge
                         status={task.payment_status}
-                        label={
-                          {
-                            ready: "等待扫码",
-                            waiting: "等待扫码",
-                            opened: "已扫码",
-                            succeeded: "支付成功",
-                            failed: "支付失败",
-                            canceled: "已取消",
-                            expired: "已过期",
-                          }[task.payment_status ?? ""] ?? "未知"
-                        }
+                        label={paymentStatusLabel(task.payment_status)}
                       />
                     </TableCell>
                     <TableCell>
@@ -1369,17 +1357,7 @@ export function PipelineRunPage() {
                     <TableCell>
                       <StatusBadge
                         status={item.payment_status}
-                        label={
-                          {
-                            ready: "等待扫码",
-                            waiting: "等待扫码",
-                            opened: "已扫码",
-                            succeeded: "支付成功",
-                            failed: "支付失败",
-                            canceled: "已取消",
-                            expired: "已过期",
-                          }[item.payment_status ?? ""] ?? "未知"
-                        }
+                        label={paymentStatusLabel(item.payment_status)}
                       />
                     </TableCell>
                     <TableCell>
@@ -1525,59 +1503,10 @@ export function PipelineRunPage() {
           value="events"
           className="mt-3 min-h-0 flex-1 overflow-auto border-t"
         >
-          <div className="divide-y text-xs">
-            {(events.data?.items ?? []).map((event) => (
-              <div
-                className={
-                  event.level === "error"
-                    ? "bg-red-50/60 px-3 py-3 dark:bg-red-950/20"
-                    : event.level === "warning"
-                      ? "bg-amber-50/60 px-3 py-3 dark:bg-amber-950/20"
-                      : "px-3 py-3"
-                }
-                key={event.id}
-              >
-                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="font-mono text-muted-foreground tabular-nums">
-                    {DATE_FORMATTER.format(new Date(event.created_at))}
-                  </span>
-                  <StatusBadge
-                    status={event.level}
-                    label={
-                      {
-                        error: "错误",
-                        warning: "警告",
-                        info: "信息",
-                        debug: "调试",
-                      }[event.level] ?? event.level
-                    }
-                  />
-                  <span className="min-w-0 font-mono font-medium break-all">
-                    {event.event_type}
-                  </span>
-                </div>
-                {event.event_type === "runtime_traceback" ? (
-                  <details>
-                    <summary className="cursor-pointer text-muted-foreground">
-                      展开异常堆栈
-                    </summary>
-                    <pre className="mt-2 max-w-full overflow-x-auto font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
-                      {event.message}
-                    </pre>
-                  </details>
-                ) : (
-                  <div className="max-w-full font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
-                    {event.message}
-                  </div>
-                )}
-              </div>
-            ))}
-            {!events.isLoading && !events.data?.items.length && (
-              <div className="py-16 text-center text-muted-foreground">
-                暂无运行日志
-              </div>
-            )}
-          </div>
+          <RuntimeEventLog
+            events={events.data?.items ?? []}
+            loading={events.isLoading}
+          />
         </TabsContent>
       </Tabs>
       <Dialog open={taskDetailOpen} onOpenChange={setTaskDetailOpen}>

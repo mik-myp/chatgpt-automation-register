@@ -108,6 +108,11 @@ class DeliveryCopySettings(BaseModel):
     )
 
 
+class MaintenanceSettings(BaseModel):
+    job_log_retention_days: int = Field(default=14, ge=1, le=365)
+    max_runtime_log_lines: int = Field(default=2000, ge=100, le=20000)
+
+
 class SystemSettingsResponse(BaseModel):
     registration: RegistrationSettings
     mail: MailSettings
@@ -115,6 +120,7 @@ class SystemSettingsResponse(BaseModel):
     sms: SmsSettings
     export: ExportSettings
     delivery_copy: DeliveryCopySettings
+    maintenance: MaintenanceSettings
 
 
 class SmsSettingsUpdate(BaseModel):
@@ -155,6 +161,7 @@ class SystemSettingsUpdate(BaseModel):
     sms: SmsSettingsUpdate
     export: ExportSettingsUpdate
     delivery_copy: DeliveryCopySettings
+    maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
 
 
 class SmsTestResponse(BaseModel):
@@ -181,11 +188,19 @@ class ConnectionTestResponse(BaseModel):
 BackupSection = Literal["settings", "accounts", "credentials", "card_batches", "cards"]
 
 
+class BackupScope(BaseModel):
+    included: list[BackupSection]
+    excluded: list[str]
+    description: str
+
+
 class BackupBundle(BaseModel):
     format: Literal["gpt-auto-register-backup"]
-    version: Literal[1]
+    version: Literal[2]
     exported_at: datetime
+    scope: BackupScope
     sections: dict[str, list[dict[str, Any]]]
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class BackupPreviewRequest(BaseModel):
@@ -217,3 +232,17 @@ class BackupImportResponse(BaseModel):
     unchanged: int
     removed: int
     protected: int
+    recovery_snapshot: str | None = None
+
+
+class StorageStatsResponse(BaseModel):
+    database_bytes: int
+    job_events: int
+    expired_job_events: int
+    backup_files: int
+    backup_bytes: int
+
+
+class StorageCleanupResponse(BaseModel):
+    removed_job_events: int
+    removed_backup_files: int

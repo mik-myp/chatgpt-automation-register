@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from gpt_auto_register.api.router import api_router
 from gpt_auto_register.core.config import get_settings
+from gpt_auto_register.core.local_access import LocalAccessMiddleware
 from gpt_auto_register.worker import WorkerManager
 
 worker_manager = WorkerManager()
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         lifespan=lifespan,
     )
+    application.add_middleware(LocalAccessMiddleware)
     application.include_router(api_router, prefix="/api")
     return application
 

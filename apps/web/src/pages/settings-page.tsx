@@ -3,22 +3,17 @@ import { useMutation } from "@tanstack/react-query"
 import {
   ChevronLeft,
   ChevronRight,
-  Database,
   Dices,
-  Download,
   Eye,
   EyeOff,
   PlugZap,
   RefreshCw,
   Save,
   Trash2,
-  Upload,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import {
-  type BackupBundle,
-  type BackupPreviewResponse,
   type DeliveryCopyRowFieldsItem,
   type DeliveryCopySettings,
   type SystemSettingsResponse,
@@ -26,6 +21,7 @@ import {
   useGetSettingsApiSettingsGet,
   useUpdateSettingsApiSettingsPut,
 } from "@/api/generated"
+import { DataTransferPanel } from "@/components/settings/data-transfer-panel"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -110,6 +106,7 @@ function editableSettings(
         fields: [...row.fields],
       })),
     },
+    maintenance: { ...settings.maintenance },
   }
 }
 
@@ -216,226 +213,6 @@ function Toggle({
       <span>{label}</span>
       <Switch checked={checked} onCheckedChange={onChange} />
     </label>
-  )
-}
-
-const BACKUP_SECTIONS = [
-  ["settings", "系统配置"],
-  ["accounts", "邮箱号池"],
-  ["credentials", "注册凭据"],
-  ["card_batches", "卡密批次"],
-  ["cards", "卡密"],
-] as const
-
-function DataTransferPanel() {
-  const [bundle, setBundle] = useState<BackupBundle | null>(null)
-  const [sections, setSections] = useState<string[]>(
-    BACKUP_SECTIONS.map(([value]) => value)
-  )
-  const [mode, setMode] = useState<"merge" | "overwrite">("merge")
-  const [preview, setPreview] = useState<BackupPreviewResponse | null>(null)
-  const [confirmed, setConfirmed] = useState(false)
-  const exporting = useMutation<BackupBundle, ApiError>({
-    mutationFn: () => apiRequest<BackupBundle>("/api/settings/data/export"),
-    onSuccess: (value) => {
-      const blob = new Blob([JSON.stringify(value, null, 2)], {
-        type: "application/json",
-      })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement("a")
-      anchor.href = url
-      anchor.download = `gpt-auto-register-${new Date().toISOString().slice(0, 10)}.json`
-      anchor.click()
-      URL.revokeObjectURL(url)
-      toast.success("数据备份已导出")
-    },
-    onError: (error) => toast.error(error.message),
-  })
-  const previewing = useMutation<BackupPreviewResponse, ApiError>({
-    mutationFn: () =>
-      apiRequest<BackupPreviewResponse>("/api/settings/data/preview", {
-        method: "POST",
-        data: { bundle, sections, mode },
-      }),
-    onSuccess: (value) => {
-      setPreview(value)
-      setConfirmed(false)
-    },
-    onError: (error) => toast.error(error.message),
-  })
-  const importing = useMutation<
-    { added: number; updated: number; unchanged: number; removed: number },
-    ApiError
-  >({
-    mutationFn: () =>
-      apiRequest("/api/settings/data/import", {
-        method: "POST",
-        data: {
-          bundle,
-          sections,
-          mode,
-          conflict_policy: "incoming",
-        },
-      }),
-    onSuccess: (value) => {
-      toast.success(
-        `导入完成：新增 ${value.added}，更新 ${value.updated}，移除 ${value.removed}`
-      )
-      setBundle(null)
-      setPreview(null)
-      setConfirmed(false)
-    },
-    onError: (error) => toast.error(error.message),
-  })
-
-  return (
-    <div className="mx-auto w-full max-w-5xl">
-      <Section
-        title="导出备份"
-        description="导出系统配置、邮箱凭据、注册令牌和 Authenticator 密钥。备份文件包含敏感数据，请只保存在可信设备。"
-      >
-        <div className="flex justify-end">
-          <Button
-            disabled={exporting.isPending}
-            onClick={() => exporting.mutate()}
-            variant="outline"
-          >
-            <Download />
-            {exporting.isPending ? "正在导出" : "下载完整备份"}
-          </Button>
-        </div>
-      </Section>
-      <Section
-        title="导入与同步"
-        description="合并会保留本机额外数据；覆盖会移除所选分区中备份不存在的数据，但使用中的账号和被历史任务引用的卡密会受到保护。"
-      >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="备份文件">
-            <Input
-              accept="application/json,.json"
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (!file) return
-                void file
-                  .text()
-                  .then((text) => {
-                    const value = JSON.parse(text) as BackupBundle
-                    if (
-                      value.format !== "gpt-auto-register-backup" ||
-                      value.version !== 1
-                    )
-                      throw new Error("不是受支持的数据备份")
-                    setBundle(value)
-                    setPreview(null)
-                  })
-                  .catch((error: unknown) =>
-                    toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : "无法读取备份文件"
-                    )
-                  )
-              }}
-            />
-          </Field>
-          <Field label="导入模式">
-            <Select
-              value={mode}
-              onValueChange={(value) => {
-                setMode(value as "merge" | "overwrite")
-                setPreview(null)
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="merge">合并</SelectItem>
-                <SelectItem value="overwrite">覆盖所选分区</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-        </div>
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          {BACKUP_SECTIONS.map(([value, label]) => (
-            <label className="flex items-center gap-2 text-sm" key={value}>
-              <Checkbox
-                checked={sections.includes(value)}
-                onCheckedChange={(checked) => {
-                  setSections((current) =>
-                    checked
-                      ? [...current, value]
-                      : current.filter((item) => item !== value)
-                  )
-                  setPreview(null)
-                }}
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-        <div className="mt-4 flex justify-end">
-          <Button
-            disabled={!bundle || !sections.length || previewing.isPending}
-            onClick={() => previewing.mutate()}
-            variant="outline"
-          >
-            <Database />
-            {previewing.isPending ? "正在分析" : "预览导入"}
-          </Button>
-        </div>
-        {preview && (
-          <div className="mt-5 border-t pt-4">
-            <div className="overflow-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="text-muted-foreground">
-                  <tr>
-                    <th className="py-2">分区</th>
-                    <th>新增</th>
-                    <th>更新</th>
-                    <th>不变</th>
-                    <th>移除</th>
-                    <th>保护</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(preview.sections).map(([name, value]) => (
-                    <tr className="border-t" key={name}>
-                      <td className="py-2">
-                        {BACKUP_SECTIONS.find(([key]) => key === name)?.[1] ??
-                          name}
-                      </td>
-                      <td>{value.added}</td>
-                      <td>{value.updated}</td>
-                      <td>{value.unchanged}</td>
-                      <td>{value.removable}</td>
-                      <td>{value.protected}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <label className="mt-4 flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={confirmed}
-                onCheckedChange={(value) => setConfirmed(value === true)}
-              />
-              我已确认以上变更并了解备份包含敏感凭据
-            </label>
-            <div className="mt-4 flex justify-end">
-              <Button
-                disabled={!confirmed || importing.isPending}
-                onClick={() => importing.mutate()}
-              >
-                <Upload />
-                {importing.isPending ? "正在导入" : "确认导入"}
-              </Button>
-            </div>
-          </div>
-        )}
-      </Section>
-    </div>
   )
 }
 
@@ -779,7 +556,17 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent className="mt-5 min-h-0 flex-1 overflow-auto" value="data">
-          <DataTransferPanel />
+          <DataTransferPanel
+            maintenance={
+              form.maintenance ?? {
+                job_log_retention_days: 14,
+                max_runtime_log_lines: 2000,
+              }
+            }
+            onMaintenanceChange={(maintenance) =>
+              setForm({ ...form, maintenance })
+            }
+          />
         </TabsContent>
 
         <TabsContent

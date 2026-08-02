@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         return API_ROOT / "data" / "runtime"
 
     @property
+    def backup_path(self) -> Path:
+        return API_ROOT / "data" / "backups"
+
+    @property
     def database_path(self) -> Path | None:
         prefix = "sqlite+pysqlite:///"
         if not self.database_url.startswith(prefix):
@@ -40,6 +44,7 @@ class Settings(BaseSettings):
         if self.database_path:
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.runtime_data_path.mkdir(parents=True, exist_ok=True)
+        self.backup_path.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

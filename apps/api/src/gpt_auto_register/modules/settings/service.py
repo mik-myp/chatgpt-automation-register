@@ -11,6 +11,7 @@ from gpt_auto_register.modules.settings.schemas import (
     KakaoSettings,
     MailSettings,
     MailSettingsUpdate,
+    MaintenanceSettings,
     RegistrationSettings,
     SmsSettings,
     SmsSettingsUpdate,
@@ -48,6 +49,9 @@ class SettingsService:
         delivery_copy = DeliveryCopySettings.model_validate(
             self._value("delivery_copy", DeliveryCopySettings().model_dump())
         )
+        maintenance = MaintenanceSettings.model_validate(
+            self._value("maintenance", MaintenanceSettings().model_dump())
+        )
         sms = SmsSettings(
             **{key: value for key, value in sms_value.items() if key != "api_key"},
             api_key_configured=bool(sms_value.get("api_key")),
@@ -64,6 +68,7 @@ class SettingsService:
             sms=sms,
             export=export,
             delivery_copy=delivery_copy,
+            maintenance=maintenance,
         )
 
     def update(self, values: SystemSettingsUpdate) -> SystemSettingsResponse:
@@ -82,6 +87,7 @@ class SettingsService:
         self._set("sms", self._merge_sms(values.sms, current_sms), sensitive=True)
         self._set("export", self._merge_export(values.export, current_export), sensitive=True)
         self._set("delivery_copy", values.delivery_copy.model_dump())
+        self._set("maintenance", values.maintenance.model_dump())
         self.session.commit()
         return self.get()
 
@@ -99,6 +105,11 @@ class SettingsService:
 
     def export_internal(self) -> dict[str, Any]:
         return ExportSettingsUpdate.model_validate(self._value("export", {})).model_dump()
+
+    def maintenance_internal(self) -> MaintenanceSettings:
+        return MaintenanceSettings.model_validate(
+            self._value("maintenance", MaintenanceSettings().model_dump())
+        )
 
     def _value(self, key: str, default: dict[str, Any]) -> dict[str, Any]:
         row = self.session.get(AppSetting, key)

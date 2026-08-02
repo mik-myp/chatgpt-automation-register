@@ -112,11 +112,31 @@ export type BackupBundleSectionsItem = { [key: string]: unknown };
 
 export type BackupBundleSections = {[key: string]: BackupBundleSectionsItem[]};
 
+export type BackupScopeIncludedItem = typeof BackupScopeIncludedItem[keyof typeof BackupScopeIncludedItem];
+
+
+export const BackupScopeIncludedItem = {
+  settings: 'settings',
+  accounts: 'accounts',
+  credentials: 'credentials',
+  card_batches: 'card_batches',
+  cards: 'cards',
+} as const;
+
+export interface BackupScope {
+  included: BackupScopeIncludedItem[];
+  excluded: string[];
+  description: string;
+}
+
 export interface BackupBundle {
   format: 'gpt-auto-register-backup';
-  version: 1;
+  version: 2;
   exported_at: string;
+  scope: BackupScope;
   sections: BackupBundleSections;
+  /** @pattern ^sha256:[0-9a-f]{64}$ */
+  checksum: string;
 }
 
 export type BackupImportRequestSectionsItem = typeof BackupImportRequestSectionsItem[keyof typeof BackupImportRequestSectionsItem];
@@ -159,6 +179,7 @@ export interface BackupImportResponse {
   unchanged: number;
   removed: number;
   protected: number;
+  recovery_snapshot?: string | null;
 }
 
 export type BackupPreviewRequestSectionsItem = typeof BackupPreviewRequestSectionsItem[keyof typeof BackupPreviewRequestSectionsItem];
@@ -660,6 +681,19 @@ export interface MailSettingsUpdate {
   cf_admin_token?: string;
 }
 
+export interface MaintenanceSettings {
+  /**
+     * @minimum 1
+     * @maximum 365
+     */
+  job_log_retention_days?: number;
+  /**
+     * @minimum 100
+     * @maximum 20000
+     */
+  max_runtime_log_lines?: number;
+}
+
 export interface PipelineCardAllocationSummary {
   card_id: string;
   card_code: string;
@@ -1017,6 +1051,19 @@ export interface SmsTestResponse {
   balance: number;
 }
 
+export interface StorageCleanupResponse {
+  removed_job_events: number;
+  removed_backup_files: number;
+}
+
+export interface StorageStatsResponse {
+  database_bytes: number;
+  job_events: number;
+  expired_job_events: number;
+  backup_files: number;
+  backup_bytes: number;
+}
+
 export interface SystemSettingsResponse {
   registration: RegistrationSettings;
   mail: MailSettings;
@@ -1024,6 +1071,7 @@ export interface SystemSettingsResponse {
   sms: SmsSettings;
   export: ExportSettings;
   delivery_copy: DeliveryCopySettings;
+  maintenance: MaintenanceSettings;
 }
 
 export interface SystemSettingsUpdate {
@@ -1033,6 +1081,7 @@ export interface SystemSettingsUpdate {
   sms: SmsSettingsUpdate;
   export: ExportSettingsUpdate;
   delivery_copy: DeliveryCopySettings;
+  maintenance?: MaintenanceSettings;
 }
 
 export type ListAccountsApiAccountsGetParams = {
@@ -4233,6 +4282,138 @@ export const useImportDataApiSettingsDataImportPost = <TError = HTTPValidationEr
         TContext
       > => {
       return useMutation(getImportDataApiSettingsDataImportPostMutationOptions(options));
+    }
+
+/**
+ * @summary Get Storage Stats
+ */
+export const getStorageStatsApiSettingsDataStorageGet = (
+
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<StorageStatsResponse>(
+      {url: `/api/settings/data/storage`, method: 'GET', signal
+    },
+      options);
+    }
+
+
+
+
+export const getGetStorageStatsApiSettingsDataStorageGetQueryKey = () => {
+    return [
+    `/api/settings/data/storage`
+    ] as const;
+    }
+
+
+export const getGetStorageStatsApiSettingsDataStorageGetQueryOptions = <TData = Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>, TError = unknown>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetStorageStatsApiSettingsDataStorageGetQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>> = ({ signal }) => getStorageStatsApiSettingsDataStorageGet(requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetStorageStatsApiSettingsDataStorageGetQueryResult = NonNullable<Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>>
+export type GetStorageStatsApiSettingsDataStorageGetQueryError = unknown
+
+
+/**
+ * @summary Get Storage Stats
+ */
+
+export function useGetStorageStatsApiSettingsDataStorageGet<TData = Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>, TError = unknown>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStorageStatsApiSettingsDataStorageGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetStorageStatsApiSettingsDataStorageGetQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Cleanup Data
+ */
+export const cleanupDataApiSettingsDataCleanupPost = (
+
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<StorageCleanupResponse>(
+      {url: `/api/settings/data/cleanup`, method: 'POST', signal
+    },
+      options);
+    }
+
+
+
+
+export const getCleanupDataApiSettingsDataCleanupPostMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>, TError,void, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>, TError,void, TContext> => {
+
+const mutationKey = ['cleanupDataApiSettingsDataCleanupPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>, void> = () => {
+
+
+          return  cleanupDataApiSettingsDataCleanupPost(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CleanupDataApiSettingsDataCleanupPostMutationResult = NonNullable<Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>>
+
+    export type CleanupDataApiSettingsDataCleanupPostMutationError = unknown
+
+    /**
+ * @summary Cleanup Data
+ */
+export const useCleanupDataApiSettingsDataCleanupPost = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>, TError,void, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof cleanupDataApiSettingsDataCleanupPost>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getCleanupDataApiSettingsDataCleanupPostMutationOptions(options));
     }
 
 /**

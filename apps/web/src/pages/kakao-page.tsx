@@ -22,6 +22,10 @@ import {
 } from "@/api/generated"
 import { TablePagination } from "@/components/table-pagination"
 import { ApiError, apiRequest } from "@/lib/api-client"
+import {
+  isTerminalPaymentStatus,
+  paymentStatusLabel,
+} from "@/lib/kakao-status"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
@@ -88,9 +92,7 @@ export function KakaoPage() {
       (task) =>
         task.status === "done" &&
         Boolean(task.payment_url) &&
-        !["succeeded", "failed", "canceled", "expired"].includes(
-          task.payment_status ?? ""
-        )
+        !isTerminalPaymentStatus(task.payment_status)
     )
     .map((task) => task.id)
   useQuery({
@@ -333,17 +335,7 @@ export function KakaoPage() {
                   <TableCell>
                     <StatusBadge
                       status={task.payment_status}
-                      label={
-                        {
-                          ready: "等待扫码",
-                          waiting: "等待扫码",
-                          opened: "已扫码",
-                          succeeded: "支付成功",
-                          failed: "支付失败",
-                          canceled: "已取消",
-                          expired: "已过期",
-                        }[task.payment_status ?? ""] ?? "未知"
-                      }
+                        label={paymentStatusLabel(task.payment_status)}
                     />
                   </TableCell>
                   <TableCell>

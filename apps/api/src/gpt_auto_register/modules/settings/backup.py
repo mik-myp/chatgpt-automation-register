@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -33,6 +36,16 @@ MODELS = {
     "card_batches": (KakaoCardBatch, ("id",)),
     "cards": (KakaoCard, ("id",)),
 }
+BACKUP_SECTIONS = tuple(MODELS)
+EXCLUDED_SECTIONS = [
+    "pipeline_runs",
+    "pipeline_items",
+    "registration_runs",
+    "jobs",
+    "job_events",
+    "kakao_tasks",
+    "pipeline_card_allocations",
+]
 
 
 def _json_value(value: Any) -> Any:
@@ -54,17 +67,48 @@ def _key(data: dict[str, Any], names: tuple[str, ...]) -> tuple[Any, ...]:
     return tuple(data.get(name) for name in names)
 
 
+def _checksum_payload(bundle: dict[str, Any]) -> str:
+    value = {key: item for key, item in bundle.items() if key != "checksum"}
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def validate_bundle(bundle: BackupBundle) -> None:
+    if bundle.checksum != _checksum_payload(bundle.model_dump(mode="json")):
+        raise ValueError("备份完整性校验失败，文件可能已损坏或被修改")
+
+
 def export_bundle(session: Session) -> BackupBundle:
     sections = {
         name: [_row_data(row) for row in session.scalars(select(model))]
         for name, (model, _) in MODELS.items()
     }
-    return BackupBundle(
-        format="gpt-auto-register-backup",
-        version=1,
-        exported_at=utc_now(),
-        sections=sections,
-    )
+    data: dict[str, Any] = {
+        "format": "gpt-auto-register-backup",
+        "version": 2,
+        "exported_at": utc_now().isoformat(),
+        "scope": {
+            "included": list(BACKUP_SECTIONS),
+            "excluded": EXCLUDED_SECTIONS,
+            "description": "配置、账号凭据和卡密迁移；不包含运行中任务及历史日志",
+        },
+        "sections": sections,
+    }
+    data["checksum"] = _checksum_payload(data)
+    return BackupBundle.model_validate(data)
+
+
+def _write_recovery_snapshot(session: Session, directory: Path) -> str | None:
+    database = getattr(getattr(session.get_bind(), "url", None), "database", None)
+    if not database or database == ":memory:":
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    bundle = export_bundle(session)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    path = directory / f"recovery-{stamp}.json"
+    path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return path.name
 
 
 def _protected_keys(session: Session, section: str) -> set[tuple[Any, ...]]:
@@ -86,6 +130,7 @@ def _protected_keys(session: Session, section: str) -> set[tuple[Any, ...]]:
 
 
 def preview_bundle(session: Session, request: BackupPreviewRequest) -> BackupPreviewResponse:
+    validate_bundle(request.bundle)
     previews: dict[str, BackupSectionPreview] = {}
     for section in request.sections:
         model, key_names = MODELS[section]
@@ -126,8 +171,17 @@ def _coerce(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def import_bundle(session: Session, request: BackupImportRequest) -> BackupImportResponse:
+def import_bundle(
+    session: Session,
+    request: BackupImportRequest,
+    *,
+    recovery_directory: Path | None = None,
+) -> BackupImportResponse:
+    validate_bundle(request.bundle)
     preview = preview_bundle(session, request)
+    recovery_snapshot = (
+        _write_recovery_snapshot(session, recovery_directory) if recovery_directory else None
+    )
     added = updated = unchanged = removed = protected = 0
     # Parent rows must be present before cards; cards must be removed before batches.
     all_sections = ("settings", "accounts", "credentials", "card_batches", "cards")
@@ -177,4 +231,5 @@ def import_bundle(session: Session, request: BackupImportRequest) -> BackupImpor
         unchanged=unchanged,
         removed=removed,
         protected=protected,
+        recovery_snapshot=recovery_snapshot,
     )

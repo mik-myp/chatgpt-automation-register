@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from mail_cf import _extract_otp
@@ -22,7 +22,7 @@ def validate_mail_url(value: str) -> str:
 class LinkMailProvider:
     """与 OutlookMailProvider 兼容的邮件链接 Provider。"""
 
-    def __init__(self, email: str, mail_url: str, session=None):
+    def __init__(self, email: str, mail_url: str, session: Any | None = None):
         self.email = str(email or "").strip().lower()
         self.mail_url = validate_mail_url(mail_url)
         self.last_persona = None
@@ -74,7 +74,7 @@ class LinkMailProvider:
         self,
         email_addr: str,
         timeout: int = 120,
-        issued_after: Optional[float] = None,
+        issued_after: float | None = None,
     ) -> str:
         deadline = time.time() + max(1, int(timeout))
         last_error = ""
@@ -88,9 +88,9 @@ class LinkMailProvider:
                 body = self._fetch()
                 otp = _extract_otp(body)
                 if otp and (not self._baseline_otp or otp != self._baseline_otp):
-                    logger.info(f"[mail-link] 获取 OTP 成功: {otp}")
+                    logger.info("[mail-link] 获取 OTP 成功")
                     self._baseline_otp = otp
-                    return otp
+                    return str(otp)
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(f"[mail-link] 拉取邮件失败，继续重试: {exc}")

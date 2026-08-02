@@ -6,6 +6,9 @@ export const router = createBrowserRouter([
   {
     path: "/",
     element: <App />,
+    hydrateFallbackElement: (
+      <div className="p-6 text-sm text-muted-foreground">正在加载...</div>
+    ),
     children: [
       {
         index: true,

@@ -57,7 +57,10 @@ def _json(response: Any, step: str) -> dict[str, Any]:
 
 
 def _backend_headers(flow: Any, access_token: str) -> dict[str, str]:
-    headers = flow._common_headers("https://chatgpt.com/")
+    headers = {
+        str(key): str(value)
+        for key, value in flow._common_headers("https://chatgpt.com/").items()
+    }
     headers.update(
         {
             "Authorization": f"Bearer {access_token}",
@@ -208,7 +211,9 @@ def _reauthenticate(
         page_type = str(flow._extract_page_type(step) or "")
         continue_extractor = getattr(flow, "_extract_continue_url_from_step", None)
         landing_url = str(
-            continue_extractor(step) if callable(continue_extractor) else step.get("continue_url") or ""
+            continue_extractor(step)
+            if callable(continue_extractor)
+            else step.get("continue_url") or ""
         )
         if page_type == "email_otp_verification" and not landing_url:
             landing_url = "https://auth.openai.com/email-verification"

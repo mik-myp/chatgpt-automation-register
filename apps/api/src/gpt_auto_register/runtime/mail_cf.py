@@ -282,8 +282,7 @@ class CFTempEmailProvider:
                     otp = _extract_otp(raw)
                     if otp:
                         logger.info(
-                            f"[cf_temp] ✅ OTP={otp} from mail id={mid} "
-                            f"raw_len={len(raw)}"
+                            f"[cf_temp] 已获取 OTP from mail id={mid} raw_len={len(raw)}"
                         )
                         return otp
                     # 没匹配到也记日志便于排查
@@ -311,7 +310,7 @@ if __name__ == "__main__":
     print(f"开始等待 OTP（120s）...")
     try:
         code = p.wait_for_otp(email, timeout=120)
-        print(f"OTP: {code}")
+        print("OTP received")
     except TimeoutError as e:
         print(f"超时: {e}")
         sys.exit(1)

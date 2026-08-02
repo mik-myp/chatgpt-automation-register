@@ -253,7 +253,7 @@ def fetch_otp_via_graph(
                 otp = _extract_otp_from_html(body_content)
                 if otp:
                     logger.info(
-                        f"[outlook-graph] {email_addr} OTP={otp} folder={folder}"
+                        f"[outlook-graph] {email_addr} 已获取 OTP folder={folder}"
                     )
                     return otp
 
@@ -470,8 +470,7 @@ def fetch_otp_via_imap(
                     otp = _extract_otp_from_html(text_body)
                     if otp:
                         logger.info(
-                            f"[outlook-imap] {email_addr} OTP={otp} "
-                            f"folder={folder!r}"
+                            f"[outlook-imap] {email_addr} 已获取 OTP folder={folder!r}"
                         )
                         try:
                             M.logout()
@@ -610,7 +609,7 @@ if __name__ == "__main__":
     prov = OutlookMailProvider(e, p, c, r)
     try:
         otp = prov.wait_for_otp(e, timeout=180)
-        print(f"OTP: {otp}")
+        print("OTP received")
     except Exception as ex:
         print(f"ERR: {ex}")
         _sys.exit(1)

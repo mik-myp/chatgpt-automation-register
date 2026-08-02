@@ -430,7 +430,7 @@ function DeleteAccountDialog() {
   )
 }
 
-function BulkAccountActions() {
+export function BulkAccountActions() {
   const queryClient = useQueryClient()
   const emails = useAccountsStore((state) => state.selectedEmails)
   const clearSelection = useAccountsStore((state) => state.clearSelection)

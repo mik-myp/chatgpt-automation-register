@@ -34,8 +34,9 @@ import os
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def _quickjs_script_path() -> Path:
     return Path(__file__).resolve().parent / "openai_sentinel_quickjs.js"
 
 
-_sdk_file_cache: Optional[Path] = None
+_sdk_file_cache: Path | None = None
 
 
 def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
@@ -96,9 +97,9 @@ def _run_quickjs_action(
     action: str,
     sdk_file: Path,
     quickjs_script: Path,
-    payload: dict,
+    payload: dict[str, Any],
     timeout_ms: int,
-) -> dict:
+) -> dict[str, Any]:
     body = dict(payload)
     body["action"] = action
     proc = subprocess.run(
@@ -113,14 +114,15 @@ def _run_quickjs_action(
         },
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"QuickJS 执行失败: {(proc.stderr or proc.stdout or 'unknown').strip()[:300]}")
+        detail = (proc.stderr or proc.stdout or "unknown").strip()[:300]
+        raise RuntimeError(f"QuickJS 执行失败: {detail}")
     out = (proc.stdout or "").strip()
     if not out:
         raise RuntimeError("QuickJS 返回空输出")
     data = json.loads(out)
     if not isinstance(data, dict):
         raise RuntimeError("QuickJS 输出不是 JSON 对象")
-    return data
+    return cast(dict[str, Any], data)
 
 
 def _fetch_sentinel_challenge(
@@ -130,7 +132,7 @@ def _fetch_sentinel_challenge(
     flow: str,
     request_p: str,
     timeout_ms: int,
-) -> dict:
+) -> dict[str, Any]:
     body = {"p": request_p, "id": device_id, "flow": flow}
     resp = session.post(
         SENTINEL_REQ_URL,
@@ -153,7 +155,7 @@ def _fetch_sentinel_challenge(
     payload = resp.json()
     if not isinstance(payload, dict):
         raise RuntimeError("Sentinel challenge 响应不是 JSON 对象")
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def get_sentinel_token_via_quickjs(
@@ -162,16 +164,16 @@ def get_sentinel_token_via_quickjs(
     *,
     flow: str = "authorize_continue",
     timeout_ms: int = 45000,
-    log: Optional[Callable[[str], None]] = None,
+    log: Callable[[str], None] | None = None,
     user_agent: str = "",
     screen: str = "",
     lang: str = "",
     lang_full: str = "",
     browser_type: str = "",
     platform: str = "",
-    vendor: Optional[str] = None,
+    vendor: str | None = None,
     hardware_concurrency: int = 0,
-    device_memory: Optional[int] = None,
+    device_memory: int | None = None,
     max_touch_points: int = 0,
     device_pixel_ratio: float = 0.0,
     timezone: str = "",  # IANA 时区名（如 Asia/Tokyo）
@@ -182,7 +184,7 @@ def get_sentinel_token_via_quickjs(
     sec_ch_ua_model: str = "",
     sec_ch_ua_platform_version: str = "",
     require_so_token: bool = True,
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Try the QuickJS path. Return JSON string on success, None on any failure.
 
     Caller is expected to fall back to pure-Python sentinel on None.

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
-import subprocess
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,6 +12,7 @@ from typing import Any
 from sqlalchemy import func, or_, select, update
 
 from gpt_auto_register.core.config import get_settings
+from gpt_auto_register.core.redaction import redact_text, redact_value
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
     AccountStatus,
@@ -41,8 +39,9 @@ from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
 from gpt_auto_register.modules.kakao.state import apply_upstream
+from gpt_auto_register.modules.settings.maintenance import cleanup_storage
 from gpt_auto_register.modules.settings.service import SettingsService
-from gpt_auto_register.worker.legacy_runner import RESULT_PREFIX
+from gpt_auto_register.worker.runtime_gateway import runtime_call
 
 _EVENT_LOCK = threading.Lock()
 
@@ -118,8 +117,8 @@ def _emit(
                 sequence=sequence,
                 level=level,
                 event_type=event_type,
-                message=message,
-                data=data or {},
+                message=redact_text(message, limit=4000),
+                data=redact_value(data or {}),
             )
         )
         session.commit()
@@ -131,50 +130,15 @@ def _legacy_call(
     *,
     job_id: str | None = None,
 ) -> dict[str, Any]:
-    settings = get_settings()
-    environment = os.environ.copy()
-    environment["GPT_AUTO_LEGACY_RUNTIME_PATH"] = str(settings.legacy_runtime_path)
-    environment["GPT_AUTO_RUNTIME_DATA_PATH"] = str(settings.runtime_data_path)
-    process = subprocess.Popen(
-        [sys.executable, "-m", "gpt_auto_register.worker.legacy_runner"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=environment,
+    max_lines = 2000
+    with SessionLocal() as session, suppress(Exception):
+        max_lines = SettingsService(session).maintenance_internal().max_runtime_log_lines
+    sink = (
+        (lambda line: _emit(job_id, "runtime_log", line, level="debug"))
+        if job_id
+        else None
     )
-    if process.stdin is None or process.stdout is None:
-        process.kill()
-        raise RuntimeError("无法连接旧项目协议运行时")
-    timed_out = threading.Event()
-
-    def terminate_on_timeout() -> None:
-        timed_out.set()
-        process.kill()
-
-    timer = threading.Timer(timeout, terminate_on_timeout)
-    timer.daemon = True
-    timer.start()
-    lines: list[str] = []
-    try:
-        process.stdin.write(json.dumps(payload, ensure_ascii=False))
-        process.stdin.close()
-        for raw_line in process.stdout:
-            line = raw_line.rstrip("\r\n")
-            lines.append(line)
-            if line and not line.startswith(RESULT_PREFIX) and job_id:
-                _emit(job_id, "runtime_log", line[-4000:], level="debug")
-        process.wait()
-    finally:
-        timer.cancel()
-    if timed_out.is_set():
-        raise RuntimeError(f"旧项目协议运行超时（{timeout} 秒）")
-    for line in reversed(lines):
-        if line.startswith(RESULT_PREFIX):
-            value = json.loads(line.removeprefix(RESULT_PREFIX))
-            if isinstance(value, dict):
-                return value
-    raise RuntimeError(lines[-1] if lines else "旧项目协议运行时未返回结果")
+    return runtime_call(payload, timeout, log_sink=sink, max_lines=max_lines)
 
 
 def _account_payload(account: OutlookAccount) -> dict[str, Any]:
@@ -1022,6 +986,7 @@ class WorkerManager:
         self._thread: threading.Thread | None = None
         self.worker_id = f"local-{os.getpid()}"
         self._next_kakao_sync = 0.0
+        self._next_maintenance = 0.0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -1048,7 +1013,11 @@ class WorkerManager:
                     Job.kind.in_(["pipeline.run", "account.security"]),
                     or_(
                         Job.status == JobStatus.QUEUED,
-                        (Job.status == JobStatus.RUNNING) & (Job.lease_expires_at < now),
+                        (Job.status == JobStatus.RUNNING)
+                        & (
+                            Job.lease_expires_at.is_(None)
+                            | (Job.lease_expires_at < now)
+                        ),
                     ),
                     Job.available_at <= now,
                 )
@@ -1153,6 +1122,16 @@ class WorkerManager:
                 self._next_kakao_sync = now + 5
                 with suppress(Exception):
                     self._sync_kakao_tasks()
+            if now >= self._next_maintenance:
+                self._next_maintenance = now + 3600
+                with suppress(Exception), SessionLocal() as session:
+                    settings = get_settings()
+                    maintenance = SettingsService(session).maintenance_internal()
+                    cleanup_storage(
+                        session,
+                        retention_days=maintenance.job_log_retention_days,
+                        backup_directory=settings.backup_path,
+                    )
             job = self._claim()
             if job is None:
                 self._stop.wait(0.5)

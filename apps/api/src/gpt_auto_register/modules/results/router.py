@@ -21,7 +21,7 @@ from gpt_auto_register.modules.results.schemas import (
     ResultTokenFilter,
 )
 from gpt_auto_register.modules.settings.service import SettingsService
-from gpt_auto_register.worker.manager import _legacy_call
+from gpt_auto_register.worker.runtime_gateway import runtime_gateway
 
 router = APIRouter(prefix="/results", tags=["registration-results"])
 
@@ -197,7 +197,7 @@ def publish_results(
     succeeded = failed = 0
     errors: list[str] = []
     for value in values:
-        result = _legacy_call(
+        result = runtime_gateway.call(
             {
                 "action": "export",
                 "credential": RegistrationResultDetail.model_validate(value).model_dump(
