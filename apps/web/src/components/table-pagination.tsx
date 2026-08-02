@@ -39,12 +39,14 @@ export function TablePagination({
   onPageChange,
   pageSize,
   onPageSizeChange,
+  total,
 }: {
   page: number
   pageCount: number
   onPageChange: (page: number) => void
   pageSize?: number
   onPageSizeChange?: (size: number) => void
+  total?: number
 }) {
   const navigate =
     (target: number) => (event: MouseEvent<HTMLAnchorElement>) => {
@@ -55,6 +57,11 @@ export function TablePagination({
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-3">
+      {total != null && (
+        <span className="text-xs text-muted-foreground">
+          总计 {total} 条数据
+        </span>
+      )}
       {pageSize && onPageSizeChange && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>每页</span>

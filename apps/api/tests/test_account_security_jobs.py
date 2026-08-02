@@ -8,6 +8,7 @@ from gpt_auto_register.worker import manager
 def test_account_security_failure_marks_job_failed(
     db_session: Session, monkeypatch,
 ) -> None:
+    worker = manager.WorkerManager()
     job = Job(
         id="account-security-job",
         kind="account.security",
@@ -15,6 +16,7 @@ def test_account_security_failure_marks_job_failed(
         payload={"action": "enable_mfa", "emails": ["user@example.com"]},
         attempts=1,
         max_attempts=1,
+        lease_owner=worker.worker_id,
     )
     db_session.add(job)
     db_session.commit()
@@ -22,7 +24,7 @@ def test_account_security_failure_marks_job_failed(
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     monkeypatch.setattr(manager, "SessionLocal", factory)
 
-    manager.WorkerManager()._finish(
+    worker._finish(
         job.id,
         result={"succeeded": 0, "failed": 1, "total": 1},
         error="1 个账号安全操作失败",

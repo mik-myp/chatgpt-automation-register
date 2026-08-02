@@ -83,9 +83,10 @@ class KakaoTask(TimestampMixin, Base):
     pipeline_item_id: Mapped[str | None] = mapped_column(
         ForeignKey("pipeline_items.id", ondelete="SET NULL"), index=True
     )
-    card_id: Mapped[str] = mapped_column(
-        ForeignKey("kakao_cards.id", ondelete="RESTRICT"), index=True
+    card_id: Mapped[str | None] = mapped_column(
+        ForeignKey("kakao_cards.id", ondelete="SET NULL"), index=True
     )
+    card_code_snapshot: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str] = mapped_column(String(320), index=True)
     status: Mapped[KakaoTaskStatus] = mapped_column(
         enum_type(KakaoTaskStatus, "kakao_task_status"), index=True, nullable=False

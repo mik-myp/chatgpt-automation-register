@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
+from gpt_auto_register.modules.results.plus_checker import check_plus
 from gpt_auto_register.modules.results.repository import ResultRepository
 from gpt_auto_register.modules.results.schemas import (
     BulkResultRequest,
@@ -38,91 +39,56 @@ def _security_status(item: object, name: str) -> str | None:
     return str(status_value) if status_value else None
 
 
-def _check_plus_token(email: str, access_token: str, proxy: str) -> PlusCheckItem:
-    from curl_cffi import requests as cffi_requests
+def _fixed_password(db: DatabaseSession) -> str:
+    registration = SettingsService(db).registration_internal()
+    return registration.fixed_password if registration.password_mode == "fixed" else ""
 
-    try:
-        proxies: Any = {"http": proxy, "https": proxy} if proxy else None
-        response = cffi_requests.get(
-            "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/145.0.0.0 Safari/537.36"
-                ),
-            },
-            proxies=proxies,
-            impersonate="chrome110",
-            timeout=15,
-        )
-        if response.status_code == 401:
-            return PlusCheckItem(
-                email=email,
-                status="banned",
-                label="封号",
-                eligible=False,
-            )
-        if response.status_code != 200:
-            return PlusCheckItem(
-                email=email,
-                status="error",
-                label="检查失败",
-                error=f"HTTP {response.status_code}",
-            )
-        payload: dict[str, Any] = response.json()  # type: ignore[no-untyped-call]
-        accounts = payload.get("accounts")
-        if not isinstance(accounts, dict) or not accounts:
-            return PlusCheckItem(
-                email=email,
-                status="error",
-                label="检查失败",
-                error="响应中没有账号数据",
-            )
-        info = _object_dict(next(iter(accounts.values())))
-        account = _object_dict(info.get("account"))
-        entitlement = _object_dict(info.get("entitlement"))
-        campaigns = _object_dict(info.get("eligible_promo_campaigns"))
-        if account.get("is_deactivated") is True:
-            return PlusCheckItem(
-                email=email,
-                status="banned",
-                label="封号",
-                eligible=False,
-            )
-        plus_campaign = campaigns.get("plus")
-        has_promo = (
-            isinstance(plus_campaign, dict) and plus_campaign.get("id") == "plus-1-month-free"
-        )
-        if account.get("plan_type") == "plus" or entitlement.get("has_active_subscription"):
-            return PlusCheckItem(
-                email=email,
-                status="plus_active",
-                label="Plus 生效中",
-                eligible=True,
-            )
-        if has_promo:
-            return PlusCheckItem(
-                email=email,
-                status="plus_eligible",
-                label="可领 Plus 试用",
-                eligible=True,
-            )
-        return PlusCheckItem(
-            email=email,
-            status="free",
-            label="Free",
-            eligible=False,
-        )
-    except Exception as error:
-        return PlusCheckItem(
-            email=email,
-            status="error",
-            label="检查失败",
-            error=str(error),
-        )
+
+def _password_value(item: object, fixed_password: str) -> str | None:
+    stored = str(getattr(item, "password", None) or "")
+    status_value = _security_status(item, "password")
+    return stored or (fixed_password if status_value in {"set", "available"} else None)
+
+
+def _detail(item: object, fixed_password: str) -> RegistrationResultDetail:
+    detail = RegistrationResultDetail.model_validate(item)
+    return detail.model_copy(update={"password": _password_value(item, fixed_password)})
+
+
+def _plus_check(item: object) -> dict[str, Any]:
+    metadata = _object_dict(getattr(item, "metadata_json", {}))
+    return _object_dict(metadata.get("plus_check"))
+
+
+def _summary(item: Any, fixed_password: str) -> RegistrationResultSummary:
+    plus = _plus_check(item)
+    is_plus = plus.get("is_plus")
+    active_subscription = plus.get("has_active_subscription")
+    password = _password_value(item, fixed_password)
+    return RegistrationResultSummary(
+        email=item.email,
+        has_password=bool(password),
+        chatgpt_password=password,
+        totp_secret=item.totp_secret,
+        has_access_token=bool(item.access_token),
+        has_session_token=bool(item.session_token),
+        has_refresh_token=bool(item.refresh_token),
+        password_status=_security_status(item, "password"),
+        mfa_status=_security_status(item, "mfa"),
+        plus_state=str(plus.get("state") or "") or None,
+        plus_label=str(plus.get("label") or "") or None,
+        plus_is_active=is_plus if isinstance(is_plus, bool) else None,
+        plus_error=str(plus.get("error") or "") or None,
+        plus_checked_at=plus.get("checked_at"),
+        plus_plan_type=str(plus.get("plan_type") or "") or None,
+        plus_subscription_plan=str(plus.get("subscription_plan") or "") or None,
+        plus_has_active_subscription=(
+            active_subscription if isinstance(active_subscription, bool) else None
+        ),
+        plus_expires_at=str(plus.get("expires_at") or "") or None,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
 
 
 @router.get("", response_model=RegistrationResultListResponse)
@@ -139,28 +105,8 @@ def list_results(
         limit=limit,
         offset=offset,
     )
-    summaries = [
-        RegistrationResultSummary(
-            email=item.email,
-            has_password=bool(item.password),
-            has_access_token=bool(item.access_token),
-            has_session_token=bool(item.session_token),
-            has_refresh_token=bool(item.refresh_token),
-            password_status=_security_status(item, "password"),
-            mfa_status=_security_status(item, "mfa"),
-            plus_eligible=(
-                item.metadata_json.get("plus_eligible")
-                if isinstance(item.metadata_json.get("plus_eligible"), bool)
-                else None
-            ),
-            plus_state=str(item.metadata_json.get("plus_state") or "") or None,
-            plus_error=str(item.metadata_json.get("plus_error") or "") or None,
-            plus_checked_at=item.metadata_json.get("plus_checked_at"),
-            created_at=item.created_at,
-            updated_at=item.updated_at,
-        )
-        for item in items
-    ]
+    fixed_password = _fixed_password(db)
+    summaries = [_summary(item, fixed_password) for item in items]
     return RegistrationResultListResponse(
         items=summaries,
         total=total,
@@ -174,9 +120,10 @@ def export_results(request: BulkResultRequest, db: DatabaseSession) -> ExportRes
     emails = list(dict.fromkeys(email.lower() for email in request.emails if email.strip()))
     if not request.all and not emails:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择要导出的注册结果")
+    fixed_password = _fixed_password(db)
     return ExportResultsResponse(
         items=[
-            RegistrationResultDetail.model_validate(item)
+            _detail(item, fixed_password)
             for item in ResultRepository(db).export(emails, request.all)
         ]
     )
@@ -227,11 +174,13 @@ def publish_results(
 
 
 @router.post("/check-plus", response_model=PlusCheckResponse)
-def check_plus(
+def check_plus_results(
     request: PlusCheckRequest,
     db: DatabaseSession,
 ) -> PlusCheckResponse:
-    emails = list(dict.fromkeys(email.strip().lower() for email in request.emails if email.strip()))
+    emails = list(
+        dict.fromkeys(email.strip().lower() for email in request.emails if email.strip())
+    )
     if not request.all and not emails:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择要检查的注册结果")
     values = ResultRepository(db).export(emails, request.all)
@@ -243,29 +192,38 @@ def check_plus(
         for email in selected_emails
         if email in by_email and by_email[email].access_token
     ]
-    workers = min(8, max(1, len(jobs)))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        checked = list(executor.map(lambda args: _check_plus_token(*args), jobs))
-    checked_by_email = {item.email: item for item in checked}
-    items: list[PlusCheckItem] = []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(jobs)))) as executor:
+        checked = list(executor.map(lambda args: check_plus(args[1], args[2]), jobs))
+    checked_by_email = {
+        email: result for (email, _, _), result in zip(jobs, checked, strict=True)
+    }
     checked_at = utc_now().isoformat()
+    items: list[PlusCheckItem] = []
     for email in selected_emails:
         credential = by_email.get(email)
         if credential is None:
-            items.append(PlusCheckItem(email=email, status="not_found", label="未找到"))
-            continue
-        item = checked_by_email.get(email)
-        if item is None:
-            item = PlusCheckItem(email=email, status="no_at", label="无 Access Token")
+            result: dict[str, object] = {
+                "state": "not_found",
+                "label": "未找到",
+                "is_plus": None,
+                "error": "注册结果不存在",
+            }
+        elif not credential.access_token:
+            result = {
+                "state": "no_access_token",
+                "label": "无 Access Token",
+                "is_plus": None,
+                "error": "",
+            }
+        else:
+            result = checked_by_email[email]
+        item = PlusCheckItem.model_validate({"email": email, **result})
         items.append(item)
-        credential.metadata_json = {
-            **credential.metadata_json,
-            "plus_eligible": item.eligible,
-            "plus_state": item.status,
-            "plus_label": item.label,
-            "plus_error": item.error,
-            "plus_checked_at": checked_at,
-        }
+        if credential is not None:
+            credential.metadata_json = {
+                **(credential.metadata_json or {}),
+                "plus_check": {**result, "checked_at": checked_at},
+            }
     db.commit()
     return PlusCheckResponse(items=items)
 
@@ -285,4 +243,4 @@ def get_result(email: str, db: DatabaseSession) -> RegistrationResultDetail:
     result = ResultRepository(db).get(email)
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "注册结果不存在")
-    return RegistrationResultDetail.model_validate(result)
+    return _detail(result, _fixed_password(db))

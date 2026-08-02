@@ -107,32 +107,38 @@ class DeliveryFormatSettings(BaseModel):
 
 
 class DeliveryCopySettings(BaseModel):
+    only_copy_plus: bool = False
     payment_links: DeliveryFormatSettings = Field(
         default_factory=lambda: DeliveryFormatSettings(
             rows=[DeliveryCopyRow(fields=["payment_url"], separator="")]
         )
     )
-    account_info: DeliveryFormatSettings = Field(
+    mail_access: DeliveryFormatSettings = Field(
         default_factory=lambda: DeliveryFormatSettings(
             sequence_style="none",
-            rows=[
-                DeliveryCopyRow(
-                    fields=["email", "mail_url", "chatgpt_password", "totp_secret"]
-                )
-            ],
+            missing_policy="skip",
+            rows=[DeliveryCopyRow(fields=["email", "mail_url"])],
+        )
+    )
+    security_credentials: DeliveryFormatSettings = Field(
+        default_factory=lambda: DeliveryFormatSettings(
+            sequence_style="none",
+            missing_policy="skip",
+            rows=[DeliveryCopyRow(fields=["email", "chatgpt_password", "totp_secret"])],
         )
     )
 
     @model_validator(mode="after")
     def validate_copy_fields(self) -> "DeliveryCopySettings":
-        payment_fields = {
-            field for row in self.payment_links.rows for field in row.fields
-        }
-        account_fields = {field for row in self.account_info.rows for field in row.fields}
+        payment_fields = {field for row in self.payment_links.rows for field in row.fields}
+        mail_fields = {field for row in self.mail_access.rows for field in row.fields}
+        security_fields = {field for row in self.security_credentials.rows for field in row.fields}
         if payment_fields != {"payment_url"}:
             raise ValueError("支付链接配置只能包含支付链接字段")
-        if "payment_url" in account_fields:
-            raise ValueError("邮箱信息配置不能包含支付链接字段")
+        if mail_fields != {"email", "mail_url"}:
+            raise ValueError("邮箱访问格式必须包含邮箱和邮件查询地址")
+        if security_fields != {"email", "chatgpt_password", "totp_secret"}:
+            raise ValueError("安全凭证格式必须包含邮箱、ChatGPT 密码和 Authenticator 密钥")
         return self
 
 

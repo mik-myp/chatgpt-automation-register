@@ -21,7 +21,7 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 @router.get("", response_model=DashboardResponse)
 def get_dashboard(db: DatabaseSession) -> DashboardResponse:
-    card_total, card_active, batches = CardRepository(db).stats()
+    card_total, card_active = CardRepository(db).stats()
     pipeline_counts = {
         pipeline_status: count
         for pipeline_status, count in db.execute(
@@ -38,7 +38,6 @@ def get_dashboard(db: DatabaseSession) -> DashboardResponse:
             total=card_total,
             active=card_active,
             inactive=card_total - card_active,
-            batches=batches,
         ),
         pipelines=DashboardPipelineStats(
             total=sum(pipeline_counts.values()),

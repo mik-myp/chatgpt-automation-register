@@ -1,70 +1,48 @@
 import { createBrowserRouter } from "react-router"
 
 import { App } from "./App"
+import { RouteError } from "./routes/route-error"
 
 export const router = createBrowserRouter([
   {
     path: "/",
     element: <App />,
+    errorElement: <RouteError />,
     hydrateFallbackElement: (
       <div className="p-6 text-sm text-muted-foreground">正在加载...</div>
     ),
     children: [
       {
         index: true,
-        lazy: async () => {
-          const { DashboardPage } = await import("./pages/dashboard-page")
-          return { Component: DashboardPage }
-        },
+        lazy: () => import("./routes/dashboard"),
       },
       {
         path: "pipelines",
-        lazy: async () => {
-          const { PipelinesPage } = await import("./pages/pipelines-page")
-          return { Component: PipelinesPage }
-        },
+        lazy: () => import("./routes/pipelines"),
       },
       {
         path: "pipelines/:runId",
-        lazy: async () => {
-          const { PipelineRunPage } = await import("./pages/pipelines-page")
-          return { Component: PipelineRunPage }
-        },
+        lazy: () => import("./routes/pipeline-run"),
       },
       {
         path: "accounts",
-        lazy: async () => {
-          const { AccountsPage } = await import("./pages/accounts-page")
-          return { Component: AccountsPage }
-        },
+        lazy: () => import("./routes/accounts"),
       },
       {
         path: "cards",
-        lazy: async () => {
-          const { CardsPage } = await import("./pages/cards-page")
-          return { Component: CardsPage }
-        },
+        lazy: () => import("./routes/cards"),
       },
       {
         path: "kakao",
-        lazy: async () => {
-          const { KakaoPage } = await import("./pages/kakao-page")
-          return { Component: KakaoPage }
-        },
+        lazy: () => import("./routes/kakao"),
       },
       {
         path: "results",
-        lazy: async () => {
-          const { ResultsPage } = await import("./pages/results-page")
-          return { Component: ResultsPage }
-        },
+        lazy: () => import("./routes/results"),
       },
       {
         path: "settings",
-        lazy: async () => {
-          const { SettingsPage } = await import("./pages/settings-page")
-          return { Component: SettingsPage }
-        },
+        lazy: () => import("./routes/settings"),
       },
     ],
   },

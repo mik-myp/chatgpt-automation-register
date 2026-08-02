@@ -1,16 +1,23 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
+from sqlalchemy import func, select
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.models.accounts import AccountStatus
+from gpt_auto_register.db.models.jobs import Job, JobEvent
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.accounts.schemas import (
     AccountDetail,
     AccountListResponse,
     AccountMaintenanceRequest,
     AccountMaintenanceResponse,
+    AccountSecurityJobDetail,
+    AccountSecurityJobEvent,
+    AccountSecurityJobListResponse,
+    AccountSecurityJobSummary,
     AccountStats,
+    AccountSummary,
     BulkAccountRequest,
     BulkAccountResponse,
     ClaimAccountRequest,
@@ -24,18 +31,37 @@ from gpt_auto_register.modules.accounts.service import (
     AccountStateError,
     account_stats,
 )
+from gpt_auto_register.modules.settings.service import SettingsService
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
+def _security_job_summary(job: Job) -> AccountSecurityJobSummary:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    result = job.result if isinstance(job.result, dict) else {}
+    emails = [str(value) for value in payload.get("emails", [])]
+    return AccountSecurityJobSummary(
+        id=job.id,
+        status=job.status,
+        action=str(payload.get("action") or ""),
+        emails=emails,
+        succeeded=int(result.get("succeeded") or 0),
+        failed=int(result.get("failed") or 0),
+        skipped=int(result.get("skipped") or 0),
+        total=int(result.get("total") or len(emails)),
+        error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        finished_at=job.finished_at,
+    )
+
+
 def _summary(
-    account: object, credential: object | None = None
-) -> AccountDetail | dict[str, object]:
-    value = AccountDetail.model_validate(account).model_dump()
-    value.pop("password", None)
-    value.pop("client_id", None)
-    value.pop("refresh_token", None)
-    value.pop("mail_url", None)
+    account: object,
+    credential: object | None = None,
+    fixed_password: str = "",
+) -> AccountSummary:
+    value = AccountSummary.model_validate(account)
     if credential is None:
         return value
     metadata = getattr(credential, "metadata_json", {}) or {}
@@ -44,10 +70,18 @@ def _summary(
     mfa = security.get("mfa", {}) if isinstance(security, dict) else {}
     password_default = "set" if getattr(credential, "password", None) else "not_set"
     mfa_default = "enabled" if getattr(credential, "totp_secret", None) else "not_enabled"
-    value["password_status"] = str(password.get("status") or password_default)
-    value["mfa_status"] = str(mfa.get("status") or mfa_default)
-    value["security_error"] = str(mfa.get("error") or password.get("error") or "") or None
-    return value
+    password_status = str(password.get("status") or password_default)
+    stored_password = str(getattr(credential, "password", None) or "")
+    return value.model_copy(
+        update={
+            "password_status": password_status,
+            "mfa_status": str(mfa.get("status") or mfa_default),
+            "security_error": str(mfa.get("error") or password.get("error") or "") or None,
+            "chatgpt_password": stored_password
+            or (fixed_password if password_status in {"set", "available"} else None),
+            "totp_secret": getattr(credential, "totp_secret", None),
+        }
+    )
 
 
 def _handle_account_error(error: Exception) -> HTTPException:
@@ -64,19 +98,29 @@ def _handle_account_error(error: Exception) -> HTTPException:
 def list_accounts(
     db: DatabaseSession,
     account_status: Annotated[AccountStatus | None, Query(alias="status")] = None,
+    security_filter: Literal["all", "incomplete", "complete"] = "all",
     search: str = "",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AccountListResponse:
+    registration = SettingsService(db).registration_internal()
+    fixed_password = (
+        registration.fixed_password if registration.password_mode == "fixed" else ""
+    )
     items, total = AccountRepository(db).list_page(
         status=account_status,
+        security_filter=security_filter,
+        fixed_password_available=bool(fixed_password),
         search=search,
         limit=limit,
         offset=offset,
     )
     credentials = AccountRepository(db).credentials([item.email for item in items])
     return AccountListResponse(
-        items=[_summary(item, credentials.get(item.email)) for item in items],
+        items=[
+            _summary(item, credentials.get(item.email), fixed_password)
+            for item in items
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -86,6 +130,65 @@ def list_accounts(
 @router.get("/stats", response_model=AccountStats)
 def get_account_stats(db: DatabaseSession) -> AccountStats:
     return AccountStats(**account_stats(AccountRepository(db)))
+
+
+@router.get("/security-jobs", response_model=AccountSecurityJobListResponse)
+def list_account_security_jobs(
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AccountSecurityJobListResponse:
+    filters = [Job.kind == "account.security"]
+    total = db.scalar(select(func.count()).select_from(Job).where(*filters)) or 0
+    jobs = list(
+        db.scalars(
+            select(Job)
+            .where(*filters)
+            .order_by(Job.created_at.desc(), Job.id)
+            .limit(limit)
+            .offset(offset)
+        )
+    )
+    return AccountSecurityJobListResponse(
+        items=[_security_job_summary(job) for job in jobs],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/security-jobs/{job_id}", response_model=AccountSecurityJobDetail)
+def get_account_security_job(
+    job_id: str,
+    db: DatabaseSession,
+) -> AccountSecurityJobDetail:
+    job = db.get(Job, job_id)
+    if job is None or job.kind != "account.security":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "账号安全任务不存在")
+    events = list(
+        db.scalars(
+            select(JobEvent)
+            .where(JobEvent.job_id == job.id)
+            .order_by(JobEvent.sequence)
+            .limit(5000)
+        )
+    )
+    summary = _security_job_summary(job)
+    return AccountSecurityJobDetail(
+        **summary.model_dump(),
+        events=[
+            AccountSecurityJobEvent(
+                id=event.id,
+                sequence=event.sequence,
+                level=event.level,
+                event_type=event.event_type,
+                message=event.message,
+                data=event.data,
+                created_at=event.created_at,
+            )
+            for event in events
+        ],
+    )
 
 
 @router.post("/import", response_model=ImportAccountsResponse)

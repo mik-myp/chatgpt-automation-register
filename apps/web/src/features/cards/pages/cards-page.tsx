@@ -14,6 +14,20 @@ import {
 import { toast } from "sonner"
 
 import {
+  BulkCardAction,
+  type CardUsageItem,
+  useBulkCardActionApiKakaoCardsBatchPost,
+  useGetCardStatsApiKakaoCardsStatsGet,
+  useListCardsApiKakaoCardsGet,
+} from "@/api/generated"
+import { StatusBadge } from "@/components/status-badge"
+import { TablePagination } from "@/components/table-pagination"
+import { TableRefreshButton } from "@/components/table-refresh-button"
+import { ImportCardsDialog } from "@/features/cards/components/card-tools"
+import { refreshCardQueries } from "@/features/cards/lib/card-queries"
+import { ApiError, apiRequest } from "@/lib/api-client"
+import { formatBeijingDateTime } from "@/lib/date-time"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -23,28 +37,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@workspace/ui/components/alert-dialog"
-import {
-  BulkCardAction,
-  type CardUsageItem,
-  useBulkCardActionApiKakaoCardsBatchPost,
-  useGetCardStatsApiKakaoCardsStatsGet,
-  useImportCardsApiKakaoCardsImportPost,
-  useListCardsApiKakaoCardsGet,
-} from "@/api/generated"
-import { ApiError, apiRequest } from "@/lib/api-client"
-import { TablePagination } from "@/components/table-pagination"
-import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
 import {
   Select,
@@ -61,82 +55,6 @@ import {
   TableHeader,
   TableRow,
 } from "@workspace/ui/components/table"
-import { Textarea } from "@workspace/ui/components/textarea"
-
-function refreshCards(queryClient: ReturnType<typeof useQueryClient>) {
-  return queryClient.invalidateQueries({
-    predicate: (query) =>
-      typeof query.queryKey[0] === "string" &&
-      query.queryKey[0].startsWith("/api/kakao/cards"),
-  })
-}
-
-function ImportCardsDialog({
-  open,
-  setOpen,
-}: {
-  open: boolean
-  setOpen: (open: boolean) => void
-}) {
-  const queryClient = useQueryClient()
-  const [name, setName] = useState("")
-  const [text, setText] = useState("")
-  const mutation = useImportCardsApiKakaoCardsImportPost<ApiError>({
-    mutation: {
-      onSuccess: (result) => {
-        void refreshCards(queryClient)
-        setOpen(false)
-        setName("")
-        setText("")
-        const duplicates = result.duplicates
-          ? `，跳过重复 ${result.duplicates}`
-          : ""
-        toast.success(`导入完成：新增 ${result.inserted}${duplicates}`)
-      },
-      onError: (error) => toast.error(error.message),
-    },
-  })
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>导入卡密</DialogTitle>
-          <DialogDescription>
-            新卡密会归入同一批次，重复内容自动跳过。
-          </DialogDescription>
-        </DialogHeader>
-        <Input
-          aria-label="批次名称"
-          maxLength={128}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="批次名称（可选）"
-          value={name}
-        />
-        <Textarea
-          aria-label="卡密列表"
-          className="min-h-72 resize-y font-mono text-xs"
-          onChange={(event) => setText(event.target.value)}
-          placeholder="KA-XXXX-XXXX"
-          value={text}
-        />
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline">取消</Button>
-          </DialogClose>
-          <Button
-            disabled={!text.trim() || mutation.isPending}
-            onClick={() =>
-              mutation.mutate({ data: { text, batch_name: name } })
-            }
-          >
-            <Upload />
-            {mutation.isPending ? "正在导入" : "导入卡密"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 export function CardsPage() {
   const queryClient = useQueryClient()
@@ -158,7 +76,7 @@ export function CardsPage() {
   const mutation = useBulkCardActionApiKakaoCardsBatchPost<ApiError>({
     mutation: {
       onSuccess: (result, variables) => {
-        void refreshCards(queryClient)
+        void refreshCardQueries(queryClient)
         setSelected([])
         const action =
           variables.data.action === BulkCardAction.activate
@@ -196,6 +114,14 @@ export function CardsPage() {
   const usageByCard = new Map(
     (usageQuery.data?.items ?? []).map((item) => [item.card_id, item])
   )
+  const remainingTotal = usageQuery.data
+    ? usageQuery.data.items.reduce(
+        (sum, item) => sum + (item.error ? 0 : item.remaining),
+        0
+      )
+    : null
+  const remainingFailures =
+    usageQuery.data?.items.filter((item) => item.error).length ?? 0
   const run = (action: BulkCardAction) =>
     mutation.mutate({ data: { action, card_ids: selected } })
   const runOne = (action: BulkCardAction, cardId: string) =>
@@ -215,9 +141,17 @@ export function CardsPage() {
           ["总卡密", stats.data?.total ?? 0],
           ["已启用", stats.data?.active ?? 0],
           ["已停用", stats.data?.inactive ?? 0],
-          ["批次", stats.data?.batches ?? 0],
+          ["实时剩余", remainingTotal ?? "-"],
         ].map(([label, value], index) => (
-          <div className={`px-4 py-4 ${index ? "border-l" : ""}`} key={label}>
+          <div
+            className={`px-4 py-4 ${index ? "border-l" : ""}`}
+            key={label}
+            title={
+              label === "实时剩余" && remainingFailures
+                ? `${remainingFailures} 个卡密查询失败，当前合计不包含失败项`
+                : undefined
+            }
+          >
             <div className="text-xs text-muted-foreground">{label}</div>
             <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">
               {value}
@@ -240,7 +174,7 @@ export function CardsPage() {
                 setPage(0)
                 setSelected([])
               }}
-              placeholder="搜索卡密或批次"
+              placeholder="搜索卡密"
               value={search}
             />
           </div>
@@ -312,10 +246,18 @@ export function CardsPage() {
               <KeyRound />
               {usageQuery.isFetching ? "正在查询" : "检查卡密用量"}
             </Button>
+            <TableRefreshButton
+              isRefreshing={cards.isFetching || stats.isFetching}
+              label="刷新卡密列表"
+              onRefresh={() => {
+                void cards.refetch()
+                void stats.refetch()
+              }}
+            />
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="min-w-220">
+          <Table className="min-w-200">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
@@ -334,7 +276,6 @@ export function CardsPage() {
                   />
                 </TableHead>
                 <TableHead>卡密</TableHead>
-                <TableHead>批次</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>使用轮次</TableHead>
                 <TableHead>分配</TableHead>
@@ -374,7 +315,6 @@ export function CardsPage() {
                     <TableCell className="font-mono text-xs">
                       {card.code}
                     </TableCell>
-                    <TableCell className="text-xs">{card.batch_name}</TableCell>
                     <TableCell>
                       <StatusBadge
                         status={card.active ? "enabled" : "canceled"}
@@ -408,11 +348,7 @@ export function CardsPage() {
                       {usage?.error ? "查询失败" : (usage?.remaining ?? "-")}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
-                      {card.usage_checked_at
-                        ? new Date(card.usage_checked_at).toLocaleString(
-                            "zh-CN"
-                          )
-                        : "-"}
+                      {formatBeijingDateTime(card.usage_checked_at)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
@@ -449,7 +385,7 @@ export function CardsPage() {
                 <TableRow>
                   <TableCell
                     className="h-52 text-center text-sm text-destructive"
-                    colSpan={13}
+                    colSpan={12}
                   >
                     无法读取卡密库存
                   </TableCell>
@@ -457,7 +393,7 @@ export function CardsPage() {
               )}
               {!cards.isLoading && !cards.isError && !rows.length && (
                 <TableRow>
-                  <TableCell className="h-52 text-center" colSpan={13}>
+                  <TableCell className="h-52 text-center" colSpan={12}>
                     <Inbox className="mx-auto mb-3 size-7 text-muted-foreground" />
                     <p className="text-sm font-medium">暂无卡密</p>
                   </TableCell>
@@ -470,6 +406,7 @@ export function CardsPage() {
           page={page}
           pageCount={pageCount}
           pageSize={pageSize}
+          total={cards.data?.total ?? 0}
           onPageChange={(value) => {
             setPage(value)
             setSelected([])
@@ -492,7 +429,8 @@ export function CardsPage() {
               删除 {deleteIds.length} 个卡密？
             </AlertDialogTitle>
             <AlertDialogDescription>
-              已被流水线或 Kakao 任务引用的卡密会自动跳过。
+              仍被排队、运行或暂停中的流水线占用的卡密会自动跳过。历史 Kakao
+              任务将保留卡密编号快照。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

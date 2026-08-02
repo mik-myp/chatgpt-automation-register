@@ -1,12 +1,9 @@
 import { useDeferredValue, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
-  Check,
-  Clipboard,
   CreditCard,
   Download,
   Eye,
-  EyeOff,
   Inbox,
   Search,
   Send,
@@ -15,7 +12,6 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
-import { QRCodeSVG } from "qrcode.react"
 
 import {
   ListResultsApiResultsGetTokenFilter,
@@ -25,8 +21,19 @@ import {
   useListResultsApiResultsGet,
 } from "@/api/generated"
 import { TablePagination } from "@/components/table-pagination"
-import { StatusBadge } from "@/components/status-badge"
+import { TableRefreshButton } from "@/components/table-refresh-button"
+import {
+  PlusState,
+  SecurityState,
+  TokenState,
+} from "@/features/results/components/result-details"
+import { ResultDetailDialog } from "@/features/results/components/result-detail-dialog"
+import {
+  downloadResultsJson,
+  type StrictPlusCheckResponse,
+} from "@/features/results/lib/result-actions"
 import { ApiError, apiRequest } from "@/lib/api-client"
+import { formatBeijingDateTime } from "@/lib/date-time"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,13 +49,6 @@ import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import { Input } from "@workspace/ui/components/input"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@workspace/ui/components/dialog"
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -63,205 +63,6 @@ import {
   TableHeader,
   TableRow,
 } from "@workspace/ui/components/table"
-
-function downloadJson(value: unknown) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], {
-    type: "application/json",
-  })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement("a")
-  anchor.href = url
-  anchor.download = `registration-results-${new Date().toISOString().slice(0, 10)}.json`
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
-
-function TokenState({ value }: { value: boolean }) {
-  return value ? (
-    <Check className="size-4 text-emerald-600" />
-  ) : (
-    <span className="text-muted-foreground">-</span>
-  )
-}
-
-function SecurityState({
-  kind,
-  status,
-}: {
-  kind: "password" | "mfa"
-  status?: string | null
-}) {
-  const labels: Record<string, string> = {
-    set: "已设置",
-    available: "可用",
-    enabled: "已启用",
-    failed: "失败",
-    unsupported: "不支持",
-    not_requested: "未开启",
-    skipped_partial: "已跳过",
-  }
-  if (!status)
-    return <span className="text-xs text-muted-foreground">未记录</span>
-  return (
-    <StatusBadge
-      status={status}
-      label={labels[status] ?? `${kind === "mfa" ? "MFA" : "密码"}: ${status}`}
-    />
-  )
-}
-
-function SecurityDetails({ metadata }: { metadata: Record<string, unknown> }) {
-  const security = metadata.account_security
-  if (!security || typeof security !== "object") return null
-  const outcomes = security as Record<string, unknown>
-  const rows = [
-    ["密码", outcomes.password],
-    ["Authenticator MFA", outcomes.mfa],
-  ] as const
-  return (
-    <div className="border-b py-3">
-      <div className="mb-2 text-xs font-medium">账号安全状态</div>
-      <div className="grid gap-2">
-        {rows.map(([label, raw]) => {
-          const outcome =
-            raw && typeof raw === "object"
-              ? (raw as Record<string, unknown>)
-              : {}
-          return (
-            <div className="grid gap-0.5 text-xs" key={label}>
-              <div className="flex items-center gap-2">
-                <span className="w-36 text-muted-foreground">{label}</span>
-                <span>{String(outcome.status ?? "未记录")}</span>
-              </div>
-              {outcome.error ? (
-                <p className="pl-4 leading-5 text-destructive">
-                  {String(outcome.error)}
-                </p>
-              ) : null}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function PlusState({
-  eligible,
-  state,
-  error,
-  checkedAt,
-}: {
-  eligible?: boolean | null
-  state?: string | null
-  error?: string | null
-  checkedAt?: string | null
-}) {
-  const labels: Record<string, string> = {
-    plus_active: "Plus 生效中",
-    plus_eligible: "可领 Plus",
-    free: "Free",
-    banned: "封号",
-    error: "检查失败",
-    no_at: "无 Access Token",
-  }
-  if (eligible == null && !state)
-    return <span className="text-xs text-muted-foreground">未检查</span>
-  return (
-    <Badge
-      title={[
-        state,
-        error,
-        checkedAt ? new Date(checkedAt).toLocaleString("zh-CN") : "",
-      ]
-        .filter(Boolean)
-        .join("\n")}
-      variant="outline"
-    >
-      {labels[state ?? ""] ?? (eligible ? "可用" : "不可用")}
-    </Badge>
-  )
-}
-
-function CredentialField({
-  label,
-  value,
-  sensitive = false,
-}: {
-  label: string
-  value?: string | null
-  sensitive?: boolean
-}) {
-  const [revealed, setRevealed] = useState(false)
-  const displayValue =
-    sensitive && value && !revealed ? "••••••••••••••••" : value
-  return (
-    <div className="grid gap-1.5 border-b py-3 last:border-b-0">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium">{label}</span>
-        <div className="flex items-center gap-1">
-          {sensitive && value && (
-            <Button
-              aria-label={revealed ? `隐藏${label}` : `显示${label}`}
-              onClick={() => setRevealed((value) => !value)}
-              size="icon-sm"
-              variant="ghost"
-            >
-              {revealed ? <EyeOff /> : <Eye />}
-            </Button>
-          )}
-          <Button
-            aria-label={`复制${label}`}
-            disabled={!value}
-            onClick={() => {
-              void navigator.clipboard.writeText(value ?? "")
-              toast.success(`已复制${label}`)
-            }}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <Clipboard />
-          </Button>
-        </div>
-      </div>
-      <pre className="max-h-28 overflow-auto rounded-sm bg-muted/40 p-2 font-mono text-xs break-all whitespace-pre-wrap">
-        {displayValue || "-"}
-      </pre>
-    </div>
-  )
-}
-
-function TotpSetup({
-  email,
-  secret,
-}: {
-  email: string
-  secret?: string | null
-}) {
-  if (!secret) return null
-  const uri = `otpauth://totp/${encodeURIComponent(`ChatGPT:${email}`)}?${new URLSearchParams(
-    {
-      secret,
-      issuer: "ChatGPT",
-      algorithm: "SHA1",
-      digits: "6",
-      period: "30",
-    }
-  )}`
-  return (
-    <div className="grid gap-4 border-b py-4 sm:grid-cols-[160px_1fr] sm:items-center">
-      <div className="w-fit bg-white p-3">
-        <QRCodeSVG size={136} value={uri} />
-      </div>
-      <div>
-        <div className="text-xs font-medium">Authenticator App</div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          使用 Authenticator App 扫描二维码，或在应用中手动输入下方密钥。
-        </p>
-      </div>
-    </div>
-  )
-}
 
 export function ResultsPage() {
   const queryClient = useQueryClient()
@@ -292,7 +93,7 @@ export function ResultsPage() {
   const exportMutation = useExportResultsApiResultsExportPost<ApiError>({
     mutation: {
       onSuccess: (data) => {
-        downloadJson(data.items)
+        downloadResultsJson(data.items)
         toast.success(`已导出 ${data.items.length} 条注册结果`)
       },
       onError: (error) => toast.error(error.message),
@@ -322,39 +123,19 @@ export function ResultsPage() {
     onSuccess: () => setDetailOpen(true),
     onError: (error) => toast.error(error.message),
   })
-  const eligibilityMutation = useMutation<
-    {
-      items: Array<{
-        email: string
-        eligible: boolean | null
-        status: string
-        label: string
-        error: string
-      }>
-    },
-    ApiError,
-    boolean
-  >({
+  const plusMutation = useMutation<StrictPlusCheckResponse, ApiError, boolean>({
     mutationFn: (all) =>
-      apiRequest<{
-        items: Array<{
-          email: string
-          eligible: boolean | null
-          status: string
-          label: string
-          error: string
-        }>
-      }>("/api/results/check-plus", {
+      apiRequest<StrictPlusCheckResponse>("/api/results/check-plus", {
         method: "POST",
         data: { emails: all ? [] : selected, all },
         timeout: 600_000,
       }),
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ["/api/results"] })
-      const eligible = data.items.filter((item) => item.eligible).length
-      const failed = data.items.filter((item) => item.error).length
+      const plus = data.items.filter((item) => item.is_plus === true).length
+      const unknown = data.items.filter((item) => item.is_plus == null).length
       toast.success(
-        `Plus 检查完成：${eligible}/${data.items.length} 个账号可用${failed ? `，${failed} 个失败` : ""}`
+        `Plus 检查完成：确认 Plus ${plus}/${data.items.length}${unknown ? `，无法确认 ${unknown}` : ""}`
       )
     },
     onError: (error) => toast.error(error.message),
@@ -408,13 +189,13 @@ export function ResultsPage() {
         <h1 className="text-xl font-semibold">注册结果</h1>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           <Button
-            disabled={eligibilityMutation.isPending}
-            onClick={() => eligibilityMutation.mutate(true)}
+            disabled={plusMutation.isPending}
+            onClick={() => plusMutation.mutate(true)}
             size="sm"
             variant="outline"
           >
             <ShieldCheck />
-            检查全部 Plus
+            严格检查全部 Plus
           </Button>
           <Button
             disabled={publishMutation.isPending}
@@ -494,15 +275,12 @@ export function ResultsPage() {
               <SelectItem value="access">有 Access Token</SelectItem>
               <SelectItem value="session">有 Session Token</SelectItem>
               <SelectItem value="refresh">有 Refresh Token</SelectItem>
-              <SelectItem value="plus_eligible">Plus 可用</SelectItem>
-              <SelectItem value="plus_ineligible">Plus 不可用</SelectItem>
-              <SelectItem value="plus_unchecked">Plus 未检查</SelectItem>
+              <SelectItem value="plus">确认是 Plus</SelectItem>
+              <SelectItem value="not_plus">确认非 Plus</SelectItem>
+              <SelectItem value="plus_unknown">Plus 无法确认</SelectItem>
             </SelectContent>
           </Select>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              筛选结果 {results.data?.total ?? 0} 条
-            </span>
             {selected.length > 0 && (
               <>
                 <span className="text-xs font-medium">
@@ -521,13 +299,13 @@ export function ResultsPage() {
                   导出选中
                 </Button>
                 <Button
-                  disabled={eligibilityMutation.isPending}
-                  onClick={() => eligibilityMutation.mutate(false)}
+                  disabled={plusMutation.isPending}
+                  onClick={() => plusMutation.mutate(false)}
                   size="sm"
                   variant="outline"
                 >
                   <ShieldCheck />
-                  检查 Plus
+                  严格检查 Plus
                 </Button>
                 <Button
                   disabled={kakaoMutation.isPending}
@@ -578,6 +356,11 @@ export function ResultsPage() {
                 </Button>
               </>
             )}
+            <TableRefreshButton
+              isRefreshing={results.isFetching}
+              label="刷新注册结果"
+              onRefresh={() => void results.refetch()}
+            />
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
@@ -605,7 +388,7 @@ export function ResultsPage() {
                 <TableHead>Access</TableHead>
                 <TableHead>Session</TableHead>
                 <TableHead>Refresh</TableHead>
-                <TableHead>Plus 资格</TableHead>
+                <TableHead>Plus</TableHead>
                 <TableHead>保存时间</TableHead>
                 <TableHead className="w-14 text-right">操作</TableHead>
               </TableRow>
@@ -632,6 +415,7 @@ export function ResultsPage() {
                   <TableCell>
                     <SecurityState
                       kind="password"
+                      value={item.chatgpt_password}
                       status={
                         item.password_status ??
                         (item.has_password ? "available" : null)
@@ -639,7 +423,11 @@ export function ResultsPage() {
                     />
                   </TableCell>
                   <TableCell>
-                    <SecurityState kind="mfa" status={item.mfa_status} />
+                    <SecurityState
+                      kind="mfa"
+                      status={item.mfa_status}
+                      value={item.totp_secret}
+                    />
                   </TableCell>
                   <TableCell>
                     <TokenState value={item.has_access_token} />
@@ -652,14 +440,18 @@ export function ResultsPage() {
                   </TableCell>
                   <TableCell>
                     <PlusState
-                      checkedAt={item.plus_checked_at}
-                      eligible={item.plus_eligible}
-                      error={item.plus_error}
                       state={item.plus_state}
+                      label={item.plus_label}
+                      error={item.plus_error}
+                      checkedAt={item.plus_checked_at}
+                      planType={item.plus_plan_type}
+                      subscriptionPlan={item.plus_subscription_plan}
+                      activeSubscription={item.plus_has_active_subscription}
+                      expiresAt={item.plus_expires_at}
                     />
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {new Date(item.created_at).toLocaleString("zh-CN")}
+                    {formatBeijingDateTime(item.created_at)}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -688,6 +480,7 @@ export function ResultsPage() {
           page={page}
           pageCount={pageCount}
           pageSize={pageSize}
+          total={results.data?.total ?? 0}
           onPageChange={(value) => {
             setPage(value)
             setSelected([])
@@ -735,75 +528,11 @@ export function ResultsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>凭证详情</DialogTitle>
-            <DialogDescription>{detailMutation.data?.email}</DialogDescription>
-          </DialogHeader>
-          {detailMutation.data && (
-            <div>
-              <div className="flex justify-end border-b pb-2">
-                <Button
-                  onClick={() => {
-                    void navigator.clipboard.writeText(
-                      JSON.stringify(detailMutation.data, null, 2)
-                    )
-                    toast.success("已复制完整凭证 JSON")
-                  }}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Clipboard />
-                  复制 JSON
-                </Button>
-              </div>
-              <CredentialField label="邮箱" value={detailMutation.data.email} />
-              <CredentialField
-                label="密码"
-                value={detailMutation.data.password}
-                sensitive
-              />
-              <TotpSetup
-                email={detailMutation.data.email}
-                secret={detailMutation.data.totp_secret}
-              />
-              <CredentialField
-                label="Authenticator TOTP Secret"
-                value={detailMutation.data.totp_secret}
-                sensitive
-              />
-              <SecurityDetails
-                metadata={detailMutation.data.metadata_json ?? {}}
-              />
-              <CredentialField
-                label="Access Token"
-                value={detailMutation.data.access_token}
-              />
-              <CredentialField
-                label="Session Token"
-                value={detailMutation.data.session_token}
-              />
-              <CredentialField
-                label="Refresh Token"
-                value={detailMutation.data.refresh_token}
-              />
-              <CredentialField
-                label="ID Token"
-                value={detailMutation.data.id_token}
-              />
-              <CredentialField
-                label="Device ID"
-                value={detailMutation.data.device_id}
-              />
-              <CredentialField
-                label="Cookie"
-                value={detailMutation.data.cookie_header}
-              />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <ResultDetailDialog
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        result={detailMutation.data}
+      />
     </div>
   )
 }

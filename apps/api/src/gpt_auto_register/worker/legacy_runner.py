@@ -104,6 +104,8 @@ def _register(payload: dict[str, Any]) -> dict[str, Any]:
             "password": security["password"],
             "mfa": security["mfa"],
         }
+        if security["password"].get("status") == "set" and security["password_value"]:
+            result["password"] = security["password_value"]
         result["totp_secret"] = security["totp_secret"]
     except RuntimeError:
         result = flow.result.to_dict()

@@ -1,15 +1,15 @@
 from dataclasses import dataclass
 
-from sqlalchemy import delete, distinct, exists, func, or_, select, update
+from sqlalchemy import delete, distinct, exists, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
-    KakaoTask,
     PipelineCardAllocation,
 )
+from gpt_auto_register.db.models.pipeline import PipelineRun, PipelineStatus
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.db.result import affected_rows
 
@@ -17,7 +17,6 @@ from gpt_auto_register.db.result import affected_rows
 @dataclass(frozen=True, slots=True)
 class CardInventoryRow:
     card: KakaoCard
-    batch: KakaoCardBatch
     run_count: int
     allocated_count: int
     created_count: int
@@ -42,33 +41,23 @@ class CardRepository:
             filters.append(KakaoCard.active.is_(active))
         if search:
             needle = f"%{search.strip().lower()}%"
-            filters.append(
-                or_(
-                    func.lower(KakaoCard.code).like(needle),
-                    func.lower(KakaoCardBatch.name).like(needle),
-                )
-            )
+            filters.append(func.lower(KakaoCard.code).like(needle))
 
-        total = (
-            self.session.scalar(
-                select(func.count()).select_from(KakaoCard).join(KakaoCardBatch).where(*filters)
-            )
-            or 0
-        )
+        total = self.session.scalar(
+            select(func.count()).select_from(KakaoCard).where(*filters)
+        ) or 0
         rows = self.session.execute(
             select(
                 KakaoCard,
-                KakaoCardBatch,
                 func.count(distinct(PipelineCardAllocation.pipeline_run_id)),
                 func.coalesce(func.sum(PipelineCardAllocation.allocated_count), 0),
                 func.coalesce(func.sum(PipelineCardAllocation.created_count), 0),
                 func.coalesce(func.sum(PipelineCardAllocation.duplicate_count), 0),
                 func.coalesce(func.sum(PipelineCardAllocation.failed_count), 0),
             )
-            .join(KakaoCardBatch)
             .outerjoin(PipelineCardAllocation)
             .where(*filters)
-            .group_by(KakaoCard.id, KakaoCardBatch.id)
+            .group_by(KakaoCard.id)
             .order_by(KakaoCard.created_at.desc(), KakaoCard.position)
             .limit(limit)
             .offset(offset)
@@ -77,19 +66,18 @@ class CardRepository:
             [
                 CardInventoryRow(
                     card=card,
-                    batch=batch,
                     run_count=run_count,
                     allocated_count=allocated,
                     created_count=created,
                     duplicate_count=duplicate,
                     failed_count=failed,
                 )
-                for card, batch, run_count, allocated, created, duplicate, failed in rows
+                for card, run_count, allocated, created, duplicate, failed in rows
             ],
             total,
         )
 
-    def stats(self) -> tuple[int, int, int]:
+    def stats(self) -> tuple[int, int]:
         total = self.session.scalar(select(func.count()).select_from(KakaoCard)) or 0
         active = (
             self.session.scalar(
@@ -97,8 +85,7 @@ class CardRepository:
             )
             or 0
         )
-        batches = self.session.scalar(select(func.count()).select_from(KakaoCardBatch)) or 0
-        return total, active, batches
+        return total, active
 
     def active_cards(self) -> list[KakaoCard]:
         return list(
@@ -155,16 +142,32 @@ class CardRepository:
         return processed
 
     def delete_cards(self, card_ids: list[str]) -> int:
+        active_runs = select(PipelineRun.id).where(
+            PipelineRun.status.in_(
+                [
+                    PipelineStatus.QUEUED,
+                    PipelineStatus.RUNNING,
+                    PipelineStatus.PAUSED,
+                ]
+            )
+        )
         deleted_ids = list(
             self.session.scalars(
                 select(KakaoCard.id).where(
                     KakaoCard.id.in_(card_ids),
-                    ~exists().where(PipelineCardAllocation.card_id == KakaoCard.id),
-                    ~exists().where(KakaoTask.card_id == KakaoCard.id),
+                    ~exists().where(
+                        PipelineCardAllocation.card_id == KakaoCard.id,
+                        PipelineCardAllocation.pipeline_run_id.in_(active_runs),
+                    ),
                 )
             )
         )
         if deleted_ids:
+            self.session.execute(
+                delete(PipelineCardAllocation).where(
+                    PipelineCardAllocation.card_id.in_(deleted_ids)
+                )
+            )
             self.session.execute(delete(KakaoCard).where(KakaoCard.id.in_(deleted_ids)))
         self.session.execute(
             delete(KakaoCardBatch).where(~exists().where(KakaoCard.batch_id == KakaoCardBatch.id))

@@ -7,15 +7,22 @@ from pydantic import BaseModel, ConfigDict, Field
 class RegistrationResultSummary(BaseModel):
     email: str
     has_password: bool
+    chatgpt_password: str | None = None
+    totp_secret: str | None = None
     has_access_token: bool
     has_session_token: bool
     has_refresh_token: bool
     password_status: str | None = None
     mfa_status: str | None = None
-    plus_eligible: bool | None = None
     plus_state: str | None = None
+    plus_label: str | None = None
+    plus_is_active: bool | None = None
     plus_error: str | None = None
     plus_checked_at: datetime | None = None
+    plus_plan_type: str | None = None
+    plus_subscription_plan: str | None = None
+    plus_has_active_subscription: bool | None = None
+    plus_expires_at: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -59,10 +66,15 @@ class PlusCheckRequest(BulkResultRequest):
 
 class PlusCheckItem(BaseModel):
     email: str
-    status: str
+    state: str
     label: str
-    eligible: bool | None = None
+    is_plus: bool | None = None
     error: str = ""
+    account_id: str = ""
+    plan_type: str = ""
+    subscription_plan: str = ""
+    has_active_subscription: bool | None = None
+    expires_at: str | None = None
 
 
 class PlusCheckResponse(BaseModel):
@@ -89,7 +101,7 @@ ResultTokenFilter = Literal[
     "access",
     "session",
     "refresh",
-    "plus_eligible",
-    "plus_ineligible",
-    "plus_unchecked",
+    "plus",
+    "not_plus",
+    "plus_unknown",
 ]

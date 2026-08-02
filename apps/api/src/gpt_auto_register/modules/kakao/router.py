@@ -8,7 +8,11 @@ from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, KakaoTaskStatus
-from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
+from gpt_auto_register.modules.cards.allocator import (
+    CardAllocationError,
+    CardAllocator,
+    card_allocation_guard,
+)
 from gpt_auto_register.modules.kakao.client import (
     KakaoApiError,
     KakaoClient,
@@ -27,7 +31,13 @@ from gpt_auto_register.modules.kakao.schemas import (
     KakaoTaskListResponse,
     KakaoTaskSummary,
 )
-from gpt_auto_register.modules.kakao.state import apply_payment, apply_upstream, task_status
+from gpt_auto_register.modules.kakao.state import (
+    apply_payment,
+    apply_retry,
+    apply_upstream,
+    synchronized_kakao_state,
+    task_status,
+)
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.service import SettingsService
 
@@ -73,7 +83,7 @@ def list_kakao_tasks(
     if changed:
         db.commit()
     return KakaoTaskListResponse(
-        items=items,
+        items=[KakaoTaskSummary.model_validate(item) for item in items],
         total=total,
         limit=limit,
         offset=offset,
@@ -161,40 +171,42 @@ def create_kakao_tasks(
     if any(not credentials.get(email) or not credentials[email].access_token for email in emails):
         raise HTTPException(status.HTTP_409_CONFLICT, "部分注册结果缺少 Access Token")
     try:
-        slots, _ = CardAllocator(db).select(len(emails))
-        client = _client(db)
-        settings = SettingsService(db).kakao_internal()
-        created = duplicates = 0
-        for email, card_code in zip(emails, slots, strict=True):
-            payload = client.create_tasks(
-                card=card_code,
-                access_tokens=[str(credentials[email].access_token)],
-                plan_type=settings.plan_type,
-                promo_code=settings.promo_code,
-            )
-            card = db.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
-            if card is None:
-                continue
-            for value in payload_tasks(payload):
-                upstream_id = str(value.get("job_id") or value.get("id") or "")
-                if not upstream_id:
-                    continue
-                existing = db.scalar(
-                    select(KakaoTask).where(KakaoTask.upstream_job_id == upstream_id)
+        with card_allocation_guard():
+            slots, _ = CardAllocator(db).select(len(emails))
+            client = _client(db)
+            settings = SettingsService(db).kakao_internal()
+            created = duplicates = 0
+            for email, card_code in zip(emails, slots, strict=True):
+                payload = client.create_tasks(
+                    card=card_code,
+                    access_tokens=[str(credentials[email].access_token)],
+                    plan_type=settings.plan_type,
+                    promo_code=settings.promo_code,
                 )
-                if existing:
-                    duplicates += 1
+                card = db.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
+                if card is None:
                     continue
-                task = KakaoTask(
-                    upstream_job_id=upstream_id,
-                    card_id=card.id,
-                    email=email,
-                    status=task_status(value.get("status")),
-                )
-                apply_upstream(task, value)
-                db.add(task)
-                created += 1
-        db.commit()
+                for value in payload_tasks(payload):
+                    upstream_id = str(value.get("job_id") or value.get("id") or "")
+                    if not upstream_id:
+                        continue
+                    existing = db.scalar(
+                        select(KakaoTask).where(KakaoTask.upstream_job_id == upstream_id)
+                    )
+                    if existing:
+                        duplicates += 1
+                        continue
+                    task = KakaoTask(
+                        upstream_job_id=upstream_id,
+                        card_id=card.id,
+                        card_code_snapshot=card.code,
+                        email=email,
+                        status=task_status(value.get("status")),
+                    )
+                    apply_upstream(task, value)
+                    db.add(task)
+                    created += 1
+            db.commit()
         return KakaoCreateTasksResponse(created=created, duplicates=duplicates)
     except (CardAllocationError, KakaoApiError) as error:
         status_code = (
@@ -204,6 +216,7 @@ def create_kakao_tasks(
 
 
 @router.post("/sync", response_model=KakaoTaskActionResponse)
+@synchronized_kakao_state
 def sync_kakao_tasks(
     request: KakaoTaskIdsRequest,
     db: DatabaseSession,
@@ -232,6 +245,7 @@ def sync_kakao_tasks(
 
 
 @router.post("/payment-sync", response_model=KakaoTaskActionResponse)
+@synchronized_kakao_state
 def sync_kakao_payment_statuses(
     request: KakaoTaskIdsRequest,
     db: DatabaseSession,
@@ -279,6 +293,7 @@ def get_kakao_task_upstream(task_id: str, db: DatabaseSession) -> object:
 
 
 @router.get("/{task_id}/details")
+@synchronized_kakao_state
 def get_kakao_task_details(task_id: str, db: DatabaseSession) -> object:
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
@@ -310,6 +325,7 @@ def get_kakao_task_details(task_id: str, db: DatabaseSession) -> object:
 
 
 @router.post("/{task_id}/cancel", response_model=KakaoTaskActionResponse)
+@synchronized_kakao_state
 def cancel_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionResponse:
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
@@ -325,6 +341,7 @@ def cancel_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespo
 
 
 @router.post("/{task_id}/retry", response_model=KakaoTaskActionResponse)
+@synchronized_kakao_state
 def retry_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionResponse:
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
@@ -332,8 +349,7 @@ def retry_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespon
     try:
         payload = _client(db).retry_task(task.upstream_job_id)
         values = payload_tasks(payload)
-        if values:
-            apply_upstream(task, values[0])
+        apply_retry(task, values[0] if values else {"status": "queued"})
         db.commit()
         return KakaoTaskActionResponse(processed=1)
     except KakaoApiError as error:

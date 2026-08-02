@@ -151,6 +151,7 @@ def _reauthenticate(
     post_login_add_password: bool = False,
     force_login: bool = False,
     password: str = "",
+    retry_invalid_otp: bool = True,
 ) -> str:
     """Complete OpenAI reauthentication and return the final landing URL."""
     flow._account_security_used_password = False
@@ -200,14 +201,23 @@ def _reauthenticate(
     landing_url = str(getattr(trigger, "url", "") or "")
     logger.info("账号重认证落点: %s", urlparse(landing_url).path or "/")
     if urlparse(landing_url).path == "/api/accounts/authorize":
-        sentinel_token = flow.get_sentinel_token(flow.result.device_id)
-        step = flow.authorize_continue(
-            email=email,
-            sentinel_token=sentinel_token,
-            screen_hint="login",
-            referer=landing_url,
-            trace_step="account_security_authorize_continue",
-        )
+        for attempt in range(3):
+            try:
+                sentinel_token = flow.get_sentinel_token(flow.result.device_id)
+                step = flow.authorize_continue(
+                    email=email,
+                    sentinel_token=sentinel_token,
+                    screen_hint="login",
+                    referer=landing_url,
+                    trace_step="account_security_authorize_continue",
+                )
+                break
+            except RuntimeError as error:
+                if "HTTP 429" not in str(error) or attempt == 2:
+                    raise
+                delay = 10 * (attempt + 1)
+                logger.warning("账号重认证触发限流，%s 秒后重试", delay)
+                time.sleep(delay)
         page_type = str(flow._extract_page_type(step) or "")
         continue_extractor = getattr(flow, "_extract_continue_url_from_step", None)
         landing_url = str(
@@ -236,39 +246,63 @@ def _reauthenticate(
     continue_url = ""
     if "/log-in/password" in landing_url:
         if not password:
-            raise RuntimeError("账号重认证需要当前 ChatGPT 密码")
-        flow.get_sentinel_token(flow.result.device_id)
-        step = flow.login_password_verify(password)
-        flow._account_security_used_password = True
-        extractor = getattr(flow, "_extract_continue_url_from_step", None)
-        continue_url = str(
-            extractor(step) if callable(extractor) else step.get("continue_url") or ""
-        )
-    elif "/email-verification" in landing_url or not landing_url:
+            logger.info("没有可用的 ChatGPT 密码，改用邮箱 OTP 重认证")
+            issued_after = time.time()
+            if not flow.kickoff_otp_delivery("existing_login_password"):
+                raise RuntimeError("无法发送账号重认证邮箱验证码")
+            landing_url = "https://auth.openai.com/email-verification"
+        else:
+            flow.get_sentinel_token(flow.result.device_id)
+            try:
+                step = flow.login_password_verify(password)
+                flow._account_security_used_password = True
+                extractor = getattr(flow, "_extract_continue_url_from_step", None)
+                continue_url = str(
+                    extractor(step)
+                    if callable(extractor)
+                    else step.get("continue_url") or ""
+                )
+            except RuntimeError as error:
+                if "invalid_username_or_password" not in str(error):
+                    raise
+                logger.warning("保存的 ChatGPT 密码已失效，改用邮箱 OTP 重认证")
+                issued_after = time.time()
+                if not flow.kickoff_otp_delivery("existing_login_password"):
+                    raise RuntimeError("密码失效后无法发送邮箱验证码") from error
+                landing_url = "https://auth.openai.com/email-verification"
+    if not continue_url and ("/email-verification" in landing_url or not landing_url):
         otp_headers = flow._common_headers("https://auth.openai.com/email-verification")
         otp_headers["Content-Type"] = "application/json"
-        for attempt in range(2):
-            otp_code = mail_provider.wait_for_otp(
-                email,
-                timeout=max(10, int(otp_timeout)),
-                issued_after=issued_after,
+        otp_code = mail_provider.wait_for_otp(
+            email,
+            timeout=max(10, int(otp_timeout)),
+            issued_after=issued_after,
+        )
+        validated = flow.session.post(
+            "https://auth.openai.com/api/accounts/email-otp/validate",
+            headers=otp_headers,
+            json={"code": otp_code},
+            timeout=30,
+        )
+        if validated.status_code == 200:
+            continue_url = str(
+                _json(validated, "验证账号邮箱验证码").get("continue_url") or ""
             )
-            validated = flow.session.post(
-                "https://auth.openai.com/api/accounts/email-otp/validate",
-                headers=otp_headers,
-                json={"code": otp_code},
-                timeout=30,
+        if not continue_url and retry_invalid_otp:
+            logger.warning("账号邮箱验证码验证失败，重新建立授权会话后重试")
+            return _reauthenticate(
+                flow,
+                mail_provider,
+                email=email,
+                otp_timeout=otp_timeout,
+                callback_url=callback_url,
+                screen_hint=screen_hint,
+                post_login_add_password=post_login_add_password,
+                force_login=force_login,
+                password=password,
+                retry_invalid_otp=False,
             )
-            if validated.status_code == 200:
-                continue_url = str(_json(validated, "验证账号邮箱验证码").get("continue_url") or "")
-                if continue_url:
-                    break
-            if attempt == 0:
-                logger.warning("账号邮箱验证码首次验证失败，重新发送后重试")
-                issued_after = time.time()
-                if not flow.kickoff_otp_delivery("account_security_reauth_retry"):
-                    flow.send_otp("https://auth.openai.com/email-verification")
-    else:
+    elif not continue_url:
         continue_url = landing_url
     if not continue_url:
         raise RuntimeError("账号重认证失败: 响应缺少继续地址")
@@ -338,6 +372,12 @@ def set_account_password(
         return password
     if not operation and getattr(flow, "_account_security_used_password", False):
         operation = "reset"
+    if not operation and not getattr(flow, "_account_security_used_password", False):
+        # Reaching the password form through email OTP with post_login_add_password
+        # is the passwordless-account add flow. The backend eligibility endpoint can
+        # still return 401 here because the reauthentication callback invalidates the
+        # previous ChatGPT access token.
+        operation = "add"
     if not operation:
         _, refreshed_access_token = flow.get_auth_session()
         if not refreshed_access_token:
@@ -453,6 +493,7 @@ def security_outcome(
         options.get("password_mode") or ("random" if options.get("set_password", True) else "none")
     )
     password = password_outcome(flow, mode != "none")
+    password_value = str(getattr(flow.result, "password", "") or "")
     if mode != "none" and password["status"] != "set":
         desired_password = str(options.get("fixed_password") or "")
         if mode == "random":
@@ -468,9 +509,14 @@ def security_outcome(
                 otp_timeout=int(options.get("mfa_otp_timeout") or 180),
             )
             password = {"requested": True, "status": "set", "error": ""}
+            password_value = desired_password
+            flow.result.password = desired_password
         except Exception as error:
             password = {"requested": True, "status": "failed", "error": str(error)}
             logger.warning("ChatGPT 密码设置失败: %s", error)
+    if password["status"] == "set" and not password_value and mode == "fixed":
+        password_value = str(options.get("fixed_password") or "")
+        flow.result.password = password_value
     mfa_requested = bool(options.get("enable_authenticator_mfa", False))
     mfa: dict[str, Any] = {
         "requested": mfa_requested,
@@ -490,4 +536,9 @@ def security_outcome(
         except Exception as error:
             mfa.update(status="failed", error=str(error))
             logger.warning("Authenticator App MFA 启用失败: %s", error)
-    return {"password": password, "mfa": mfa, "totp_secret": secret}
+    return {
+        "password": password,
+        "password_value": password_value,
+        "mfa": mfa,
+        "totp_secret": secret,
+    }

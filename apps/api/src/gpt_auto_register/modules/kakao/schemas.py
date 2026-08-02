@@ -12,7 +12,8 @@ class KakaoTaskSummary(BaseModel):
     upstream_job_id: str
     pipeline_run_id: str | None
     pipeline_item_id: str | None
-    card_id: str
+    card_id: str | None
+    card_code_snapshot: str | None
     email: str
     status: KakaoTaskStatus
     payment_status: str | None

@@ -1,4 +1,4 @@
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -32,13 +32,21 @@ class ResultRepository:
         if token_filter in token_columns:
             column = token_columns[token_filter]
             filters.append(and_(column.is_not(None), column != ""))
-        elif token_filter == "plus_eligible":
-            filters.append(func.json_extract(Credential.metadata_json, "$.plus_eligible") == 1)
-        elif token_filter == "plus_ineligible":
-            filters.append(func.json_extract(Credential.metadata_json, "$.plus_eligible") == 0)
-        elif token_filter == "plus_unchecked":
+        plus_state = func.json_extract(Credential.metadata_json, "$.plus_check.state")
+        if token_filter == "plus":
+            filters.append(plus_state == "plus")
+        elif token_filter == "not_plus":
             filters.append(
-                func.json_extract(Credential.metadata_json, "$.plus_checked_at").is_(None)
+                plus_state.in_(["free", "not_plus", "other_plan", "deactivated"])
+            )
+        elif token_filter == "plus_unknown":
+            filters.append(
+                or_(
+                    plus_state.is_(None),
+                    plus_state.notin_(
+                        ["plus", "free", "not_plus", "other_plan", "deactivated"]
+                    ),
+                )
             )
         total = (
             self.session.scalar(select(func.count()).select_from(Credential).where(*filters)) or 0

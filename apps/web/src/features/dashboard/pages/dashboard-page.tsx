@@ -76,7 +76,6 @@ export function DashboardPage() {
             { label: "卡密总数", value: data?.cards.total ?? 0 },
             { label: "已启用", value: data?.cards.active ?? 0 },
             { label: "已停用", value: data?.cards.inactive ?? 0 },
-            { label: "批次", value: data?.cards.batches ?? 0 },
           ]}
         />
 

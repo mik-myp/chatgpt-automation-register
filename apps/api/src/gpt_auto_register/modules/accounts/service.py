@@ -1,9 +1,11 @@
+import threading
 from typing import NoReturn
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gpt_auto_register.db.models.accounts import AccountStatus, Credential, OutlookAccount
-from gpt_auto_register.db.models.jobs import Job
+from gpt_auto_register.db.models.jobs import Job, JobStatus
 from gpt_auto_register.modules.accounts.parser import parse_accounts
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.accounts.schemas import (
@@ -25,6 +27,9 @@ class AccountStateError(Exception):
 
 class AccountPoolEmptyError(Exception):
     pass
+
+
+_SECURITY_ENQUEUE_LOCK = threading.Lock()
 
 
 class AccountService:
@@ -75,29 +80,53 @@ class AccountService:
             return
         self._raise_missing_or_state(email, "使用中的账号不能删除")
 
-    def bulk_action(self, action: BulkAccountAction, emails: list[str]) -> BulkAccountResponse:
+    def bulk_action(
+        self,
+        action: BulkAccountAction,
+        emails: list[str],
+    ) -> BulkAccountResponse:
         processed = skipped = 0
         unique_emails = list(
             dict.fromkeys(email.strip().lower() for email in emails if email.strip())
         )
-        if action in {BulkAccountAction.SET_PASSWORD, BulkAccountAction.ENABLE_MFA}:
-            eligible = [
-                email
-                for email in unique_emails
-                if self.repository.get(email) is not None
-                and self.session.get(Credential, email) is not None
-            ]
-            if not eligible:
-                return BulkAccountResponse(processed=0, skipped=len(unique_emails))
-            job = Job(
-                kind="account.security",
-                payload={"action": action.value, "emails": eligible},
-                max_attempts=1,
-            )
-            self.session.add(job)
-            self.session.commit()
+        if action in {
+            BulkAccountAction.SET_PASSWORD,
+            BulkAccountAction.ENABLE_MFA,
+            BulkAccountAction.SET_PASSWORD_AND_MFA,
+        }:
+            with _SECURITY_ENQUEUE_LOCK:
+                active_jobs = self.session.scalars(
+                    select(Job).where(
+                        Job.kind == "account.security",
+                        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                    )
+                )
+                busy_emails = {
+                    str(email).strip().lower()
+                    for job in active_jobs
+                    for email in job.payload.get("emails", [])
+                    if str(email).strip()
+                }
+                eligible = [
+                    email
+                    for email in unique_emails
+                    if email not in busy_emails
+                    and self.repository.get(email) is not None
+                    and self.session.get(Credential, email) is not None
+                ]
+                if not eligible:
+                    return BulkAccountResponse(processed=0, skipped=len(unique_emails))
+                job = Job(
+                    kind="account.security",
+                    payload={"action": action.value, "emails": eligible},
+                    max_attempts=1,
+                )
+                self.session.add(job)
+                self.session.commit()
             return BulkAccountResponse(
-                processed=len(eligible), skipped=len(unique_emails) - len(eligible), job_id=job.id
+                processed=len(eligible),
+                skipped=len(unique_emails) - len(eligible),
+                job_id=job.id,
             )
         for email in unique_emails:
             if action == BulkAccountAction.RELEASE:

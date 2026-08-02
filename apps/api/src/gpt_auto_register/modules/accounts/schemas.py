@@ -4,6 +4,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from gpt_auto_register.db.models.accounts import AccountStatus, MailType
+from gpt_auto_register.db.models.jobs import JobStatus
 
 
 class AccountSummary(BaseModel):
@@ -20,6 +21,8 @@ class AccountSummary(BaseModel):
     password_status: str = "not_set"
     mfa_status: str = "not_enabled"
     security_error: str | None = None
+    chatgpt_password: str | None = None
+    totp_secret: str | None = None
 
 
 class AccountDetail(AccountSummary):
@@ -66,6 +69,7 @@ class BulkAccountAction(StrEnum):
     DELETE = "delete"
     SET_PASSWORD = "set_password"
     ENABLE_MFA = "enable_mfa"
+    SET_PASSWORD_AND_MFA = "set_password_and_mfa"
 
 
 class BulkAccountRequest(BaseModel):
@@ -77,6 +81,42 @@ class BulkAccountResponse(BaseModel):
     processed: int
     skipped: int
     job_id: str | None = None
+
+
+class AccountSecurityJobSummary(BaseModel):
+    id: str
+    status: JobStatus
+    action: str
+    emails: list[str]
+    succeeded: int
+    failed: int
+    skipped: int
+    total: int
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+
+
+class AccountSecurityJobListResponse(BaseModel):
+    items: list[AccountSecurityJobSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class AccountSecurityJobEvent(BaseModel):
+    id: int
+    sequence: int
+    level: str
+    event_type: str
+    message: str
+    data: dict[str, object]
+    created_at: datetime
+
+
+class AccountSecurityJobDetail(AccountSecurityJobSummary):
+    events: list[AccountSecurityJobEvent]
 
 
 class AccountMaintenanceAction(StrEnum):

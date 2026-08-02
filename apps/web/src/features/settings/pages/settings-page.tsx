@@ -1,13 +1,6 @@
 import { type ReactNode, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import {
-  Dices,
-  Eye,
-  EyeOff,
-  PlugZap,
-  RefreshCw,
-  Save,
-} from "lucide-react"
+import { Dices, Eye, EyeOff, PlugZap, RefreshCw, Save } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -96,6 +89,7 @@ function editableSettings(
       sub2api_group_ids: settings.export.sub2api_group_ids,
     },
     delivery_copy: {
+      only_copy_plus: settings.delivery_copy.only_copy_plus ?? false,
       payment_links: {
         ...settings.delivery_copy.payment_links,
         rows: settings.delivery_copy.payment_links?.rows?.map((row) => ({
@@ -103,9 +97,16 @@ function editableSettings(
           fields: [...row.fields],
         })),
       },
-      account_info: {
-        ...settings.delivery_copy.account_info,
-        rows: settings.delivery_copy.account_info?.rows?.map((row) => ({
+      mail_access: {
+        ...settings.delivery_copy.mail_access,
+        rows: settings.delivery_copy.mail_access?.rows?.map((row) => ({
+          ...row,
+          fields: [...row.fields],
+        })),
+      },
+      security_credentials: {
+        ...settings.delivery_copy.security_credentials,
+        rows: settings.delivery_copy.security_credentials?.rows?.map((row) => ({
           ...row,
           fields: [...row.fields],
         })),

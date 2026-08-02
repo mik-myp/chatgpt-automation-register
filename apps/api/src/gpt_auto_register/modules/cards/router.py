@@ -44,25 +44,23 @@ def list_cards(
     for row in rows:
         cached = usage_cache.get(row.card.id, {})
         items.append(
-            CardInventoryItem(
-                id=row.card.id,
-                code=row.card.code,
-                batch_id=row.batch.id,
-                batch_name=row.batch.name,
-                batch_status=row.batch.status,
-                position=row.card.position,
-                active=row.card.active,
-                run_count=row.run_count,
-                allocated_count=row.allocated_count,
-                created_count=row.created_count,
-                duplicate_count=row.duplicate_count,
-                failed_count=row.failed_count,
-                cached_charged=cached.get("charged"),
-                cached_pending=cached.get("pending"),
-                cached_remaining=cached.get("remaining"),
-                usage_error=str(cached.get("error") or "") or None,
-                usage_checked_at=cached.get("checked_at"),
-                created_at=row.card.created_at,
+            CardInventoryItem.model_validate(
+                {
+                    "id": row.card.id,
+                    "code": row.card.code,
+                    "active": row.card.active,
+                    "run_count": row.run_count,
+                    "allocated_count": row.allocated_count,
+                    "created_count": row.created_count,
+                    "duplicate_count": row.duplicate_count,
+                    "failed_count": row.failed_count,
+                    "cached_charged": cached.get("charged"),
+                    "cached_pending": cached.get("pending"),
+                    "cached_remaining": cached.get("remaining"),
+                    "usage_error": str(cached.get("error") or "") or None,
+                    "usage_checked_at": cached.get("checked_at"),
+                    "created_at": row.card.created_at,
+                }
             )
         )
     return CardInventoryResponse(items=items, total=total, limit=limit, offset=offset)
@@ -70,12 +68,11 @@ def list_cards(
 
 @router.get("/stats", response_model=CardInventoryStats)
 def get_card_stats(db: DatabaseSession) -> CardInventoryStats:
-    total, active, batches = CardRepository(db).stats()
+    total, active = CardRepository(db).stats()
     return CardInventoryStats(
         total=total,
         active=active,
         inactive=total - active,
-        batches=batches,
     )
 
 
@@ -89,10 +86,9 @@ def import_cards(request: ImportCardsRequest, db: DatabaseSession) -> ImportCard
         )
     )
     repository = CardRepository(db)
-    batch_id, inserted, duplicates = repository.import_cards(codes, request.batch_name)
+    _, inserted, duplicates = repository.import_cards(codes, "")
     db.commit()
     return ImportCardsResponse(
-        batch_id=batch_id,
         inserted=inserted,
         duplicates=duplicates,
     )

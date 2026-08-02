@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -29,11 +29,13 @@ class AccountRepository:
         self,
         *,
         status: AccountStatus | None,
+        security_filter: str,
+        fixed_password_available: bool,
         search: str,
         limit: int,
         offset: int,
     ) -> tuple[list[OutlookAccount], int]:
-        filters = []
+        filters: list[ColumnElement[bool]] = []
         if status is not None:
             filters.append(OutlookAccount.status == status)
         if search:
@@ -45,8 +47,59 @@ class AccountRepository:
                 )
             )
 
-        query = select(OutlookAccount).where(*filters)
-        count_query = select(func.count()).select_from(OutlookAccount).where(*filters)
+        query = select(OutlookAccount)
+        count_query = select(func.count()).select_from(OutlookAccount)
+        if security_filter in {"incomplete", "complete"}:
+            password_status = func.json_extract(
+                Credential.metadata_json,
+                "$.account_security.password.status",
+            )
+            mfa_status = func.json_extract(
+                Credential.metadata_json,
+                "$.account_security.mfa.status",
+            )
+            password_complete_parts: list[ColumnElement[bool]] = [
+                password_status.in_(["set", "available"])
+            ]
+            if not fixed_password_available:
+                password_complete_parts.extend(
+                    [Credential.password.is_not(None), Credential.password != ""]
+                )
+            password_complete = and_(*password_complete_parts)
+            mfa_complete = and_(
+                Credential.totp_secret.is_not(None),
+                Credential.totp_secret != "",
+                mfa_status == "enabled",
+            )
+            password_incomplete_parts: list[ColumnElement[bool]] = [
+                password_status.is_(None),
+                password_status.notin_(["set", "available"]),
+            ]
+            if not fixed_password_available:
+                password_incomplete_parts.extend(
+                    [Credential.password.is_(None), Credential.password == ""]
+                )
+            password_incomplete = or_(*password_incomplete_parts)
+            mfa_incomplete = or_(
+                Credential.totp_secret.is_(None),
+                Credential.totp_secret == "",
+                mfa_status.is_(None),
+                mfa_status != "enabled",
+            )
+            query = query.join(Credential, Credential.email == OutlookAccount.email)
+            count_query = count_query.join(
+                Credential,
+                Credential.email == OutlookAccount.email,
+            )
+            complete = and_(password_complete, mfa_complete)
+            filters.append(
+                complete
+                if security_filter == "complete"
+                else or_(password_incomplete, mfa_incomplete)
+            )
+
+        query = query.where(*filters)
+        count_query = count_query.where(*filters)
         total = self.session.scalar(count_query) or 0
         items = list(
             self.session.scalars(

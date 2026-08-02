@@ -24,7 +24,7 @@ def test_security_settings_defaults_and_update(client: TestClient) -> None:
     assert response.json()["registration"]["enable_authenticator_mfa"] is True
 
 
-def test_result_exposes_security_status_and_detail_secret(
+def test_result_exposes_security_status_and_credentials(
     client: TestClient,
     db_session: Session,
 ) -> None:
@@ -46,7 +46,8 @@ def test_result_exposes_security_status_and_detail_secret(
     summary = client.get("/api/results").json()["items"][0]
     assert summary["password_status"] == "set"
     assert summary["mfa_status"] == "enabled"
-    assert "totp_secret" not in summary
+    assert summary["chatgpt_password"] == "password"
+    assert summary["totp_secret"] == "JBSWY3DPEHPK3PXP"
 
     detail = client.get("/api/results/secure@example.com").json()
     assert detail["totp_secret"] == "JBSWY3DPEHPK3PXP"

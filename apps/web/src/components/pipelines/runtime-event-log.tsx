@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 
 import { StatusBadge } from "@/components/status-badge"
+import { formatCompactBeijingDateTime } from "@/lib/date-time"
 import { Switch } from "@workspace/ui/components/switch"
-
-const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-})
 
 export type RuntimeEvent = {
   id: number
@@ -72,7 +65,7 @@ export function RuntimeEventLog({
           >
             <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
               <span className="font-mono text-muted-foreground tabular-nums">
-                {DATE_FORMATTER.format(new Date(event.created_at))}
+                {formatCompactBeijingDateTime(event.created_at)}
               </span>
               <StatusBadge
                 status={event.level}

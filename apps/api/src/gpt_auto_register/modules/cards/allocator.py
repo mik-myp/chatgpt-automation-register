@@ -1,4 +1,7 @@
+import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
@@ -13,6 +16,15 @@ from gpt_auto_register.modules.settings.service import SettingsService
 
 class CardAllocationError(RuntimeError):
     pass
+
+
+_CARD_ALLOCATION_LOCK = threading.RLock()
+
+
+@contextmanager
+def card_allocation_guard() -> Iterator[None]:
+    with _CARD_ALLOCATION_LOCK:
+        yield
 
 
 @dataclass(frozen=True, slots=True)

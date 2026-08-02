@@ -1,61 +1,59 @@
-import { useState } from "react"
-import { Link, useParams, useSearchParams } from "react-router"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Fragment, useState } from "react"
+import { Link, useParams } from "react-router"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import {
   ArrowLeft,
   Ban,
   ChevronRight,
-  Clipboard,
   ExternalLink,
   Eye,
-  Inbox,
   LinkIcon,
   Mail,
-  Pause,
   Play,
-  Plus,
   RefreshCw,
-  X,
+  ShieldCheck,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import {
-  BulkPipelineAction,
   getGetPipelineRunApiPipelinesRunsRunIdGetQueryKey,
   getListKakaoTasksApiKakaoTasksGetQueryKey,
-  getListPipelineRunsApiPipelinesRunsGetQueryKey,
   KakaoTaskStatus,
-  PipelineStatus,
-  type PipelineStatus as PipelineStatusType,
-  type PipelineRunSummary,
-  useBulkPipelineActionApiPipelinesRunsBatchPost,
-  useGetPipelineRunApiPipelinesRunsRunIdGet,
-  useGetSettingsApiSettingsGet,
-  useListKakaoTasksApiKakaoTasksGet,
-  useListPipelineRunsApiPipelinesRunsGet,
   type PipelineDeliverySummary,
+  PipelineRunKind,
+  useGetPipelineRunApiPipelinesRunsRunIdGet,
+  useListKakaoTasksApiKakaoTasksGet,
 } from "@/api/generated"
-import { ApiError, apiRequest } from "@/lib/api-client"
-import { isTerminalPaymentStatus, paymentStatusLabel } from "@/lib/kakao-status"
-import { StatusBadge } from "@/components/status-badge"
 import {
   RuntimeEventLog,
   type RuntimeEvent,
 } from "@/components/pipelines/runtime-event-log"
+import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
+import { TableRefreshButton } from "@/components/table-refresh-button"
+import { CreateSecurityPipelineDialog } from "@/features/pipelines/components/create-security-dialog"
+import {
+  CopySelectionBar,
+  PlusStateBadge,
+  RowCheckbox,
+  SelectionCheckbox,
+} from "@/features/pipelines/components/pipeline-ui"
+import {
+  pipelineStatus,
+  type StrictPlusCheckResponse,
+  TASK_STATUS_LABELS,
+} from "@/features/pipelines/lib/pipeline-state"
+import { SecurityPipelineRunView } from "@/features/pipelines/pages/security-pipeline-run-view"
+import { ApiError, apiRequest } from "@/lib/api-client"
+import { isTerminalPaymentStatus, paymentStatusLabel } from "@/lib/kakao-status"
 import { Button } from "@workspace/ui/components/button"
-import { Checkbox } from "@workspace/ui/components/checkbox"
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@workspace/ui/components/dialog"
-import { Input } from "@workspace/ui/components/input"
 import {
   Select,
   SelectContent,
@@ -63,7 +61,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@workspace/ui/components/select"
-import { Switch } from "@workspace/ui/components/switch"
 import {
   Table,
   TableBody,
@@ -78,607 +75,6 @@ import {
   TabsList,
   TabsTrigger,
 } from "@workspace/ui/components/tabs"
-import { Textarea } from "@workspace/ui/components/textarea"
-
-const RUN_STATUS_LABELS: Record<PipelineStatusType, string> = {
-  queued: "排队中",
-  running: "运行中",
-  paused: "已暂停",
-  completed: "已完成",
-  failed: "失败",
-  canceled: "已取消",
-}
-
-function pipelineStatus(run: PipelineRunSummary) {
-  if (run.status === "completed" && run.failed_count > 0) {
-    return run.registered_count > 0
-      ? { status: "partial", label: "部分成功" }
-      : { status: "failed", label: "失败" }
-  }
-  return { status: run.status, label: RUN_STATUS_LABELS[run.status] }
-}
-
-const TASK_STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  extracting: "提取中",
-  done: "完成",
-  failed: "失败",
-  canceled: "已取消",
-  scheduled: "待执行",
-  registering: "注册中",
-  registered: "已注册",
-  submitting: "提交中",
-  completed: "完成",
-  skipped: "跳过",
-}
-
-const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-})
-
-function formatDate(value: string | null) {
-  return value ? DATE_FORMATTER.format(new Date(value)) : "-"
-}
-
-function SelectionCheckbox({
-  ids,
-  selected,
-  setSelected,
-}: {
-  ids: string[]
-  selected: string[]
-  setSelected: (ids: string[]) => void
-}) {
-  const count = ids.filter((id) => selected.includes(id)).length
-  return (
-    <Checkbox
-      aria-label="选择当前表格全部行"
-      checked={
-        ids.length > 0 && count === ids.length
-          ? true
-          : count > 0
-            ? "indeterminate"
-            : false
-      }
-      onCheckedChange={(checked) => setSelected(checked ? ids : [])}
-    />
-  )
-}
-
-function RowCheckbox({
-  id,
-  selected,
-  setSelected,
-}: {
-  id: string
-  selected: string[]
-  setSelected: (ids: string[]) => void
-}) {
-  return (
-    <Checkbox
-      aria-label={`选择 ${id}`}
-      checked={selected.includes(id)}
-      onCheckedChange={() =>
-        setSelected(
-          selected.includes(id)
-            ? selected.filter((value) => value !== id)
-            : [...selected, id]
-        )
-      }
-    />
-  )
-}
-
-async function copyValues(values: string[], label: string) {
-  await navigator.clipboard.writeText(values.join("\n"))
-  toast.success(`已复制 ${values.length} 个${label}`)
-}
-
-function CopySelectionBar({
-  selected,
-  values,
-  label,
-  clear,
-}: {
-  selected: string[]
-  values: string[]
-  label: string
-  clear: () => void
-}) {
-  if (!selected.length) return null
-  return (
-    <div className="ml-auto flex items-center justify-end gap-2">
-      <span className="text-xs font-medium">已选 {selected.length} 项</span>
-      <Button
-        onClick={() => void copyValues(values, label)}
-        size="sm"
-        variant="outline"
-      >
-        <Clipboard />
-        复制{label}
-      </Button>
-      <Button
-        aria-label="清除选择"
-        onClick={clear}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <X />
-      </Button>
-    </div>
-  )
-}
-
-type PipelineRunCreateRequest = {
-  mode: "single" | "batch"
-  email: string
-  target_count: number
-  concurrency: number | null
-  otp_timeout: number | null
-  proxy: string | null
-  proxy_pool: string | null
-  kakao_enabled: boolean
-}
-
-function CreatePipelineDialog({ defaultEmail }: { defaultEmail: string }) {
-  const queryClient = useQueryClient()
-  const settings = useGetSettingsApiSettingsGet()
-  const [open, setOpen] = useState(Boolean(defaultEmail))
-  const [mode, setMode] = useState<"single" | "batch">(
-    defaultEmail ? "single" : "batch"
-  )
-  const [targetCount, setTargetCount] = useState(10)
-  const [concurrency, setConcurrency] = useState("")
-  const [otpTimeout, setOtpTimeout] = useState("")
-  const [proxy, setProxy] = useState("")
-  const [proxyPool, setProxyPool] = useState("")
-  const [kakaoEnabled, setKakaoEnabled] = useState(true)
-  const mutation = useMutation<
-    PipelineRunSummary,
-    ApiError,
-    PipelineRunCreateRequest
-  >({
-    mutationFn: (data) =>
-      apiRequest<PipelineRunSummary>("/api/pipelines/runs", {
-        method: "POST",
-        data,
-      }),
-    onSuccess: (run) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["/api/pipelines/runs"],
-      })
-      void queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] })
-      setOpen(false)
-      toast.success(
-        `已创建${mode === "single" ? "单次注册" : "批量轮次"} ${run.id}`
-      )
-    },
-    onError: (error) => toast.error(error.message),
-  })
-  const defaults = settings.data?.registration
-  const numberOrNull = (value: string) => (value.trim() ? Number(value) : null)
-  const textOrNull = (value: string) => value.trim() || null
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus />
-          新建注册
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>新建注册</DialogTitle>
-          <DialogDescription>
-            单次注册由系统自动选择邮箱，批量注册按目标数量创建流水线。
-          </DialogDescription>
-        </DialogHeader>
-
-        <Tabs
-          className="min-w-0"
-          value={mode}
-          onValueChange={(value) => setMode(value as typeof mode)}
-        >
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="single">单次注册</TabsTrigger>
-            <TabsTrigger value="batch">批量流水线</TabsTrigger>
-          </TabsList>
-          <TabsContent className="mt-4" value="single">
-            <div className="border-y py-4 text-sm text-muted-foreground">
-              Outlook 模式从号池领取一个可用账号；Cloudflare
-              模式自动创建临时邮箱。
-            </div>
-          </TabsContent>
-          <TabsContent className="mt-4 space-y-5" value="batch">
-            <section className="grid gap-4 border-y py-4 sm:grid-cols-3">
-              <label className="grid gap-1.5 text-xs text-muted-foreground">
-                目标数量
-                <Input
-                  max={10000}
-                  min={1}
-                  onChange={(event) =>
-                    setTargetCount(Math.max(1, Number(event.target.value)))
-                  }
-                  type="number"
-                  value={targetCount}
-                />
-              </label>
-              <label className="grid gap-1.5 text-xs text-muted-foreground">
-                并发数
-                <Input
-                  max={50}
-                  min={1}
-                  onChange={(event) => setConcurrency(event.target.value)}
-                  placeholder={`系统设置：${defaults?.concurrency ?? 10}`}
-                  type="number"
-                  value={concurrency}
-                />
-              </label>
-              <label className="grid gap-1.5 text-xs text-muted-foreground">
-                OTP 超时（秒）
-                <Input
-                  max={300}
-                  min={1}
-                  onChange={(event) => setOtpTimeout(event.target.value)}
-                  placeholder={`系统设置：${defaults?.otp_timeout ?? 10}`}
-                  type="number"
-                  value={otpTimeout}
-                />
-              </label>
-            </section>
-            <section className="grid gap-4">
-              <label className="grid gap-1.5 text-xs text-muted-foreground">
-                固定代理
-                <Input
-                  onChange={(event) => setProxy(event.target.value)}
-                  placeholder={defaults?.proxy || "系统设置：直连"}
-                  value={proxy}
-                />
-              </label>
-              <label className="grid gap-1.5 text-xs text-muted-foreground">
-                代理池（每行一个）
-                <Textarea
-                  className="min-h-28 resize-y font-mono text-xs"
-                  onChange={(event) => setProxyPool(event.target.value)}
-                  placeholder={
-                    defaults?.proxy_pool
-                      ? "留空使用系统代理池"
-                      : "留空使用系统设置"
-                  }
-                  value={proxyPool}
-                />
-              </label>
-            </section>
-          </TabsContent>
-        </Tabs>
-
-        <label className="flex items-center justify-between border-y py-3 text-sm">
-          <span>创建 Kakao Pay 任务</span>
-          <Switch checked={kakaoEnabled} onCheckedChange={setKakaoEnabled} />
-        </label>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline">取消</Button>
-          </DialogClose>
-          <Button
-            disabled={mutation.isPending}
-            onClick={() =>
-              mutation.mutate({
-                mode,
-                email: mode === "single" ? defaultEmail : "",
-                target_count: mode === "single" ? 1 : targetCount,
-                concurrency:
-                  mode === "batch" ? numberOrNull(concurrency) : null,
-                otp_timeout: mode === "batch" ? numberOrNull(otpTimeout) : null,
-                proxy: mode === "batch" ? textOrNull(proxy) : null,
-                proxy_pool: mode === "batch" ? textOrNull(proxyPool) : null,
-                kakao_enabled: kakaoEnabled,
-              })
-            }
-          >
-            <Plus />
-            {mutation.isPending ? "正在创建" : "创建"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-export function PipelinesPage() {
-  const [searchParams] = useSearchParams()
-  const queryClient = useQueryClient()
-  const [status, setStatus] = useState<PipelineStatusType | "all">("all")
-  const [page, setPage] = useState(0)
-  const [selected, setSelected] = useState<string[]>([])
-  const pageSize = 50
-  const params = {
-    status: status === "all" ? undefined : status,
-    limit: pageSize,
-    offset: page * pageSize,
-  }
-  const query = useListPipelineRunsApiPipelinesRunsGet(params, {
-    query: {
-      queryKey: getListPipelineRunsApiPipelinesRunsGetQueryKey(params),
-      refetchInterval: 2000,
-    },
-  })
-  const mutation = useBulkPipelineActionApiPipelinesRunsBatchPost<ApiError>({
-    mutation: {
-      onSuccess: (result, variables) => {
-        void queryClient.invalidateQueries({
-          queryKey: ["/api/pipelines/runs"],
-        })
-        setSelected([])
-        const skipped = result.skipped ? `，跳过 ${result.skipped}` : ""
-        const labels = {
-          [BulkPipelineAction.cancel]: "取消",
-          [BulkPipelineAction.pause]: "暂停",
-          [BulkPipelineAction.resume]: "恢复",
-        }
-        toast.success(
-          `${labels[variables.data.action]}完成：处理 ${result.processed}${skipped}`
-        )
-      },
-      onError: (error) => toast.error(error.message),
-    },
-  })
-  const rows = query.data?.items ?? []
-  const total = query.data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / pageSize))
-
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">流水线轮次</h1>
-        <CreatePipelineDialog defaultEmail={searchParams.get("email") ?? ""} />
-      </div>
-
-      <section
-        className="flex min-h-0 min-w-0 flex-1 flex-col border-t"
-        aria-label="流水线轮次列表"
-      >
-        <div className="flex flex-wrap items-center gap-2 border-b py-3">
-          <Select
-            value={status}
-            onValueChange={(value) => {
-              setStatus(value as typeof status)
-              setPage(0)
-              setSelected([])
-            }}
-          >
-            <SelectTrigger aria-label="轮次状态" className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              {Object.entries(RUN_STATUS_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {selected.length > 0 && (
-            <div className="ml-auto flex items-center justify-end gap-2">
-              <span className="text-xs font-medium">
-                已选 {selected.length} 项
-              </span>
-              <Button
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({
-                    data: {
-                      action: BulkPipelineAction.pause,
-                      run_ids: selected,
-                    },
-                  })
-                }
-                size="sm"
-                variant="outline"
-              >
-                <Pause />
-                暂停
-              </Button>
-              <Button
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({
-                    data: {
-                      action: BulkPipelineAction.resume,
-                      run_ids: selected,
-                    },
-                  })
-                }
-                size="sm"
-                variant="outline"
-              >
-                <Play />
-                恢复
-              </Button>
-              <Button
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({
-                    data: {
-                      action: BulkPipelineAction.cancel,
-                      run_ids: selected,
-                    },
-                  })
-                }
-                size="sm"
-                variant="outline"
-              >
-                <Ban />
-                取消轮次
-              </Button>
-              <Button
-                aria-label="清除选择"
-                onClick={() => setSelected([])}
-                size="icon-sm"
-                variant="ghost"
-              >
-                <X />
-              </Button>
-            </div>
-          )}
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="min-w-190">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10">
-                  <SelectionCheckbox
-                    ids={rows.map((row) => row.id)}
-                    selected={selected}
-                    setSelected={setSelected}
-                  />
-                </TableHead>
-                <TableHead>轮次</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>目标</TableHead>
-                <TableHead>注册成功</TableHead>
-                <TableHead>Kakao 任务</TableHead>
-                <TableHead>开始时间</TableHead>
-                <TableHead className="w-32 text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((run) => (
-                <TableRow key={run.id}>
-                  <TableCell>
-                    <RowCheckbox
-                      id={run.id}
-                      selected={selected}
-                      setSelected={setSelected}
-                    />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    <Link
-                      className="hover:underline"
-                      to={`/pipelines/${run.id}`}
-                    >
-                      {run.id}
-                    </Link>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge {...pipelineStatus(run)} />
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {run.target_count}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {run.registered_count}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {run.kakao_task_count}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {formatDate(run.started_at ?? run.created_at)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {(run.status === PipelineStatus.queued ||
-                      run.status === PipelineStatus.running) && (
-                      <Button
-                        aria-label={`暂停轮次 ${run.id}`}
-                        disabled={mutation.isPending}
-                        onClick={() =>
-                          mutation.mutate({
-                            data: {
-                              action: BulkPipelineAction.pause,
-                              run_ids: [run.id],
-                            },
-                          })
-                        }
-                        size="icon-sm"
-                        title="暂停"
-                        variant="ghost"
-                      >
-                        <Pause />
-                      </Button>
-                    )}
-                    {run.status === PipelineStatus.paused && (
-                      <Button
-                        aria-label={`恢复轮次 ${run.id}`}
-                        disabled={mutation.isPending}
-                        onClick={() =>
-                          mutation.mutate({
-                            data: {
-                              action: BulkPipelineAction.resume,
-                              run_ids: [run.id],
-                            },
-                          })
-                        }
-                        size="icon-sm"
-                        title="恢复"
-                        variant="ghost"
-                      >
-                        <Play />
-                      </Button>
-                    )}
-                    {(run.status === PipelineStatus.queued ||
-                      run.status === PipelineStatus.running ||
-                      run.status === PipelineStatus.paused) && (
-                      <Button
-                        aria-label={`取消轮次 ${run.id}`}
-                        disabled={mutation.isPending}
-                        onClick={() =>
-                          mutation.mutate({
-                            data: {
-                              action: BulkPipelineAction.cancel,
-                              run_ids: [run.id],
-                            },
-                          })
-                        }
-                        size="icon-sm"
-                        title="取消"
-                        variant="ghost"
-                      >
-                        <Ban />
-                      </Button>
-                    )}
-                    <Button
-                      asChild
-                      aria-label={`查看轮次 ${run.id}`}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <Link to={`/pipelines/${run.id}`}>
-                        <ChevronRight />
-                      </Link>
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {!query.isLoading && !rows.length && (
-                <TableRow>
-                  <TableCell className="h-52 text-center" colSpan={8}>
-                    <Inbox className="mx-auto mb-3 size-7 text-muted-foreground" />
-                    <p className="text-sm font-medium">暂无流水线轮次</p>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-        <TablePagination
-          page={page}
-          pageCount={pageCount}
-          onPageChange={(value) => {
-            setPage(value)
-            setSelected([])
-          }}
-        />
-      </section>
-    </div>
-  )
-}
 
 export function PipelineRunPage() {
   const { runId = "" } = useParams()
@@ -720,7 +116,8 @@ export function PipelineRunPage() {
   const tasks = useListKakaoTasksApiKakaoTasksGet(taskParams, {
     query: {
       queryKey: getListKakaoTasksApiKakaoTasksGetQueryKey(taskParams),
-      enabled: Boolean(runId),
+      enabled:
+        Boolean(runId) && run.data?.kind !== PipelineRunKind.account_security,
     },
   })
   const deliveries = useQuery({
@@ -734,7 +131,8 @@ export function PipelineRunPage() {
       }>(
         `/api/pipelines/runs/${encodeURIComponent(runId)}/deliveries?limit=${pageSize}&offset=${deliveryPage * pageSize}`
       ),
-    enabled: Boolean(runId),
+    enabled:
+      Boolean(runId) && run.data?.kind !== PipelineRunKind.account_security,
     refetchInterval: activeTab === "delivery" ? 3000 : false,
   })
   const hasActivePayment = (deliveries.data?.items ?? []).some(
@@ -750,11 +148,25 @@ export function PipelineRunPage() {
         "/api/kakao/tasks/payment-sync",
         { method: "POST", data: { task_ids: [], pipeline_run_id: runId } }
       ),
-    enabled: Boolean(runId) && activeTab === "delivery" && hasActivePayment,
+    enabled:
+      Boolean(runId) &&
+      run.data?.kind !== PipelineRunKind.account_security &&
+      activeTab === "delivery" &&
+      hasActivePayment,
     refetchInterval: 3000,
   })
   const copyDeliveries = useMutation<
-    { text: string; copied: number; skipped: number },
+    {
+      text: string
+      copied: number
+      skipped: number
+      security_credentials: number
+      mail_access: number
+      missing_mail_url: number
+      duplicates: number
+      plus_restricted: number
+      copy_marks: Array<{ email: string; fingerprint: string }>
+    },
     ApiError,
     {
       copyType: "payment_links" | "account_info"
@@ -778,13 +190,57 @@ export function PipelineRunPage() {
       const label =
         variables.copyType === "payment_links" ? "支付链接" : "邮箱信息"
       if (!result.copied) {
-        toast.error(`没有可复制的${label}`)
+        const reason = result.plus_restricted
+          ? `：${result.plus_restricted} 条未确认是 Plus`
+          : result.missing_mail_url
+            ? `：${result.missing_mail_url} 条缺少邮件查询地址`
+            : result.duplicates
+              ? `：${result.duplicates} 条已经复制过`
+              : ""
+        toast.error(`没有可复制的${label}${reason}`)
         return
       }
       await navigator.clipboard.writeText(result.text)
+      if (variables.copyType === "account_info" && result.copy_marks.length) {
+        try {
+          await apiRequest(
+            `/api/pipelines/runs/${encodeURIComponent(runId)}/deliveries/copy/confirm`,
+            {
+              method: "POST",
+              data: { copy_marks: result.copy_marks },
+            }
+          )
+        } catch {
+          toast.warning("内容已复制，但复制记录保存失败，下次可能出现重复数据")
+        }
+      }
       setDeliverySelection([])
+      const accountBreakdown =
+        variables.copyType === "account_info"
+          ? `（安全凭证 ${result.security_credentials}，邮箱访问 ${result.mail_access}）`
+          : ""
+      const skipped = result.skipped
+        ? `，跳过 ${result.skipped} 条${result.plus_restricted ? `（未确认 Plus ${result.plus_restricted}）` : result.duplicates ? `（重复或已复制 ${result.duplicates}）` : result.missing_mail_url ? `（缺少邮件查询地址 ${result.missing_mail_url}）` : ""}`
+        : ""
       toast.success(
-        `已复制 ${result.copied} 条${label}${result.skipped ? `，跳过 ${result.skipped} 条` : ""}`
+        `已复制 ${result.copied} 条${label}${accountBreakdown}${skipped}`
+      )
+    },
+    onError: (error) => toast.error(error.message),
+  })
+  const checkPlus = useMutation<StrictPlusCheckResponse, ApiError, string[]>({
+    mutationFn: (emails) =>
+      apiRequest<StrictPlusCheckResponse>("/api/results/check-plus", {
+        method: "POST",
+        data: { emails, all: false, proxy: "" },
+      }),
+    onSuccess: (result) => {
+      void run.refetch()
+      void deliveries.refetch()
+      const plus = result.items.filter((item) => item.is_plus === true).length
+      const unknown = result.items.filter((item) => item.is_plus == null).length
+      toast.success(
+        `Plus 检查完成：确认 Plus ${plus}/${result.items.length}${unknown ? `，无法确认 ${unknown}` : ""}`
       )
     },
     onError: (error) => toast.error(error.message),
@@ -867,6 +323,16 @@ export function PipelineRunPage() {
   if (!data) {
     return <div className="text-sm text-muted-foreground">正在读取轮次...</div>
   }
+  if (data.kind === PipelineRunKind.account_security) {
+    return (
+      <SecurityPipelineRunView
+        data={data}
+        events={events}
+        refresh={() => void run.refetch()}
+        refreshing={run.isFetching}
+      />
+    )
+  }
 
   const selectedItems = data.items.filter((item) =>
     itemSelection.includes(item.id)
@@ -917,6 +383,11 @@ export function PipelineRunPage() {
           </h1>
           <StatusBadge className="mt-1" {...pipelineStatus(data)} />
         </div>
+        {data.registered_count > 0 && (
+          <div className="ml-auto">
+            <CreateSecurityPipelineDialog sourceRunId={data.id} />
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 border-y bg-muted/20 sm:grid-cols-5">
@@ -963,28 +434,35 @@ export function PipelineRunPage() {
           className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden border-t"
         >
           <div className="flex min-h-12 items-center border-b py-2">
-            <CopySelectionBar
-              selected={itemSelection}
-              values={selectedItems
-                .map((item) => item.account_email)
-                .filter((value): value is string => Boolean(value))}
-              label="邮箱"
-              clear={() => setItemSelection([])}
-            />
-            {itemSelection.length > 0 && (
-              <Button
-                disabled={retryItems.isPending}
-                onClick={() => retryItems.mutate(itemSelection)}
-                size="sm"
-                variant="outline"
-              >
-                <RefreshCw />
-                重跑失败项
-              </Button>
-            )}
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              <CopySelectionBar
+                selected={itemSelection}
+                values={selectedItems
+                  .map((item) => item.account_email)
+                  .filter((value): value is string => Boolean(value))}
+                label="邮箱"
+                clear={() => setItemSelection([])}
+              />
+              {itemSelection.length > 0 && (
+                <Button
+                  disabled={retryItems.isPending}
+                  onClick={() => retryItems.mutate(itemSelection)}
+                  size="sm"
+                  variant="outline"
+                >
+                  <RefreshCw />
+                  重跑失败项
+                </Button>
+              )}
+              <TableRefreshButton
+                isRefreshing={run.isFetching}
+                label="刷新注册项"
+                onRefresh={() => void run.refetch()}
+              />
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            <Table>
+            <Table className="min-w-220">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -1063,6 +541,7 @@ export function PipelineRunPage() {
           <TablePagination
             page={itemPage}
             pageCount={itemPageCount}
+            total={data.items.length}
             onPageChange={(value) => {
               setItemPage(value)
               setItemSelection([])
@@ -1085,7 +564,7 @@ export function PipelineRunPage() {
             >
               <SelectTrigger
                 aria-label="Kakao 任务状态"
-                className="w-32"
+                className="mr-2 w-32"
                 size="sm"
               >
                 <SelectValue />
@@ -1099,43 +578,50 @@ export function PipelineRunPage() {
                 ))}
               </SelectContent>
             </Select>
-            <CopySelectionBar
-              selected={taskSelection}
-              values={selectedTasks.map((task) => task.upstream_job_id)}
-              label="任务 ID"
-              clear={() => setTaskSelection([])}
-            />
-            {taskSelection.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                <Button
-                  disabled={taskAction.isPending}
-                  onClick={() => taskAction.mutate({ action: "sync" })}
-                  size="sm"
-                  variant="outline"
-                >
-                  <RefreshCw />
-                  同步
-                </Button>
-                <Button
-                  disabled={taskAction.isPending}
-                  onClick={() => taskAction.mutate({ action: "retry" })}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Play />
-                  重试
-                </Button>
-                <Button
-                  disabled={taskAction.isPending}
-                  onClick={() => taskAction.mutate({ action: "cancel" })}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Ban />
-                  取消
-                </Button>
-              </div>
-            )}
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              <CopySelectionBar
+                selected={taskSelection}
+                values={selectedTasks.map((task) => task.upstream_job_id)}
+                label="任务 ID"
+                clear={() => setTaskSelection([])}
+              />
+              {taskSelection.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    disabled={taskAction.isPending}
+                    onClick={() => taskAction.mutate({ action: "sync" })}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <RefreshCw />
+                    同步
+                  </Button>
+                  <Button
+                    disabled={taskAction.isPending}
+                    onClick={() => taskAction.mutate({ action: "retry" })}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Play />
+                    重试
+                  </Button>
+                  <Button
+                    disabled={taskAction.isPending}
+                    onClick={() => taskAction.mutate({ action: "cancel" })}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Ban />
+                    取消
+                  </Button>
+                </div>
+              )}
+              <TableRefreshButton
+                isRefreshing={tasks.isFetching}
+                label="刷新 Kakao 任务"
+                onRefresh={() => void tasks.refetch()}
+              />
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
             <Table className="min-w-190">
@@ -1263,6 +749,7 @@ export function PipelineRunPage() {
           <TablePagination
             page={taskPage}
             pageCount={taskPageCount}
+            total={tasks.data?.total ?? 0}
             onPageChange={(value) => {
               setTaskPage(value)
               setTaskSelection([])
@@ -1276,9 +763,9 @@ export function PipelineRunPage() {
         >
           <div className="flex min-h-12 flex-wrap items-center gap-2 border-b py-2">
             <span className="text-xs text-muted-foreground">
-              可交付记录包含支付链接及其对应的邮箱凭据
+              邮箱信息会按最新密码与 MFA 状态自动选择安全凭证或邮箱访问格式
             </span>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {deliverySelection.length > 0 && (
                 <>
                   <Button
@@ -1309,6 +796,23 @@ export function PipelineRunPage() {
                     <Mail />
                     已选邮箱信息 ({deliverySelection.length})
                   </Button>
+                  <Button
+                    disabled={checkPlus.isPending}
+                    onClick={() =>
+                      checkPlus.mutate(
+                        deliveryRows
+                          .filter((item) =>
+                            deliverySelection.includes(item.task_id)
+                          )
+                          .map((item) => item.email)
+                      )
+                    }
+                    size="sm"
+                    variant="outline"
+                  >
+                    <ShieldCheck />
+                    严格检查 Plus
+                  </Button>
                 </>
               )}
               <Button
@@ -1337,10 +841,30 @@ export function PipelineRunPage() {
                 <Mail />
                 全部邮箱信息
               </Button>
+              <Button
+                disabled={checkPlus.isPending || data.items.length === 0}
+                onClick={() =>
+                  checkPlus.mutate(
+                    data.items
+                      .map((item) => item.account_email)
+                      .filter((email): email is string => Boolean(email))
+                  )
+                }
+                size="sm"
+                variant="outline"
+              >
+                <ShieldCheck />
+                严格检查全部 Plus
+              </Button>
+              <TableRefreshButton
+                isRefreshing={deliveries.isFetching}
+                label="刷新交付信息"
+                onRefresh={() => void deliveries.refetch()}
+              />
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            <Table className="min-w-230">
+            <Table className="min-w-280">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -1356,8 +880,10 @@ export function PipelineRunPage() {
                   <TableHead>支付链接</TableHead>
                   <TableHead>提取状态</TableHead>
                   <TableHead>扫码状态</TableHead>
-                  <TableHead>ChatGPT 密码</TableHead>
-                  <TableHead>Authenticator</TableHead>
+                  <TableHead>密码</TableHead>
+                  <TableHead>MFA</TableHead>
+                  <TableHead>Plus</TableHead>
+                  <TableHead>邮箱复制格式</TableHead>
                   <TableHead className="w-24 text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1408,15 +934,43 @@ export function PipelineRunPage() {
                     </TableCell>
                     <TableCell>
                       <StatusBadge
-                        status={item.chatgpt_password ? "set" : "not_set"}
-                        label={item.chatgpt_password ? "已设置" : "未设置"}
+                        status={item.password_status}
+                        label={
+                          item.password_status === "set" ? "已设置" : "未完成"
+                        }
                       />
                     </TableCell>
                     <TableCell>
                       <StatusBadge
-                        status={item.totp_secret ? "enabled" : "not_enabled"}
-                        label={item.totp_secret ? "已启用" : "未启用"}
+                        status={item.mfa_status}
+                        label={
+                          item.mfa_status === "enabled" ? "已启用" : "未完成"
+                        }
                       />
+                    </TableCell>
+                    <TableCell>
+                      <PlusStateBadge
+                        state={item.plus_state}
+                        label={item.plus_label}
+                        error={item.plus_error}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={item.account_format}
+                        label={
+                          item.account_format === "security_credentials"
+                            ? "安全凭证"
+                            : item.account_format === "mail_access"
+                              ? "邮箱访问"
+                              : "不可复制"
+                        }
+                      />
+                      {item.account_missing_reason && (
+                        <span className="ml-2 text-xs text-destructive">
+                          {item.account_missing_reason}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
@@ -1436,7 +990,11 @@ export function PipelineRunPage() {
                       </Button>
                       <Button
                         aria-label={`复制 ${item.email} 的邮箱信息`}
-                        disabled={!item.deliverable || copyDeliveries.isPending}
+                        disabled={
+                          !item.deliverable ||
+                          item.account_format === "unavailable" ||
+                          copyDeliveries.isPending
+                        }
                         onClick={() =>
                           copyDeliveries.mutate({
                             copyType: "account_info",
@@ -1444,7 +1002,7 @@ export function PipelineRunPage() {
                           })
                         }
                         size="icon-sm"
-                        title="复制邮箱信息"
+                        title={item.account_missing_reason ?? "复制邮箱信息"}
                         variant="ghost"
                       >
                         <Mail />
@@ -1472,7 +1030,7 @@ export function PipelineRunPage() {
                   <TableRow>
                     <TableCell
                       className="h-40 text-center text-sm text-muted-foreground"
-                      colSpan={8}
+                      colSpan={10}
                     >
                       本轮次暂无交付信息
                     </TableCell>
@@ -1484,6 +1042,7 @@ export function PipelineRunPage() {
           <TablePagination
             page={deliveryPage}
             pageCount={deliveryPageCount}
+            total={deliveries.data?.total ?? 0}
             onPageChange={(value) => {
               setDeliveryPage(value)
               setDeliverySelection([])
@@ -1496,12 +1055,19 @@ export function PipelineRunPage() {
           className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden border-t"
         >
           <div className="flex min-h-12 items-center border-b py-2">
-            <CopySelectionBar
-              selected={cardSelection}
-              values={selectedCards.map((card) => card.card_code)}
-              label="卡密"
-              clear={() => setCardSelection([])}
-            />
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              <CopySelectionBar
+                selected={cardSelection}
+                values={selectedCards.map((card) => card.card_code)}
+                label="卡密"
+                clear={() => setCardSelection([])}
+              />
+              <TableRefreshButton
+                isRefreshing={run.isFetching}
+                label="刷新卡密分配"
+                onRefresh={() => void run.refetch()}
+              />
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
             <Table>
@@ -1515,36 +1081,84 @@ export function PipelineRunPage() {
                     />
                   </TableHead>
                   <TableHead>卡密</TableHead>
-                  <TableHead>分配</TableHead>
-                  <TableHead>创建</TableHead>
-                  <TableHead>重复</TableHead>
-                  <TableHead>失败</TableHead>
+                  <TableHead>分配统计</TableHead>
+                  <TableHead>使用邮箱</TableHead>
+                  <TableHead>任务 ID</TableHead>
+                  <TableHead>任务状态</TableHead>
+                  <TableHead>支付状态</TableHead>
+                  <TableHead>扣卡</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {cardRows.map((card) => (
-                  <TableRow key={card.card_id}>
-                    <TableCell>
-                      <RowCheckbox
-                        id={card.card_id}
-                        selected={cardSelection}
-                        setSelected={setCardSelection}
-                      />
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {card.card_code}
-                    </TableCell>
-                    <TableCell>{card.allocated_count}</TableCell>
-                    <TableCell>{card.created_count}</TableCell>
-                    <TableCell>{card.duplicate_count}</TableCell>
-                    <TableCell>{card.failed_count}</TableCell>
-                  </TableRow>
+                  <Fragment key={card.card_id}>
+                    <TableRow className="bg-muted/20">
+                      <TableCell>
+                        <RowCheckbox
+                          id={card.card_id}
+                          selected={cardSelection}
+                          setSelected={setCardSelection}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs font-medium">
+                        {card.card_code}
+                      </TableCell>
+                      <TableCell className="text-xs tabular-nums">
+                        分配 {card.allocated_count} · 创建 {card.created_count}{" "}
+                        · 重复 {card.duplicate_count} · 失败 {card.failed_count}
+                      </TableCell>
+                      <TableCell
+                        colSpan={5}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {(card.assignments ?? []).length
+                          ? `${card.assignments?.length} 个邮箱任务`
+                          : "尚未生成 Kakao 任务"}
+                      </TableCell>
+                    </TableRow>
+                    {(card.assignments ?? []).map((assignment) => (
+                      <TableRow key={assignment.task_id}>
+                        <TableCell />
+                        <TableCell className="pl-6 text-xs text-muted-foreground">
+                          <ChevronRight className="size-3" />
+                        </TableCell>
+                        <TableCell />
+                        <TableCell className="font-mono text-xs">
+                          {assignment.email}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {assignment.task_id}
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge
+                            status={assignment.status}
+                            label={TASK_STATUS_LABELS[assignment.status]}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge
+                            status={assignment.payment_status}
+                            label={paymentStatusLabel(
+                              assignment.payment_status
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {assignment.card_charged == null
+                            ? "-"
+                            : assignment.card_charged
+                              ? "是"
+                              : "否"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </Fragment>
                 ))}
                 {!data.cards.length && (
                   <TableRow>
                     <TableCell
                       className="h-40 text-center text-sm text-muted-foreground"
-                      colSpan={6}
+                      colSpan={8}
                     >
                       本轮次未分配卡密
                     </TableCell>
@@ -1556,6 +1170,7 @@ export function PipelineRunPage() {
           <TablePagination
             page={cardPage}
             pageCount={cardPageCount}
+            total={data.cards.length}
             onPageChange={(value) => {
               setCardPage(value)
               setCardSelection([])

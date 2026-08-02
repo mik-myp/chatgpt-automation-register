@@ -21,21 +21,14 @@ import {
   useListKakaoTasksApiKakaoTasksGet,
 } from "@/api/generated"
 import { TablePagination } from "@/components/table-pagination"
+import { TableRefreshButton } from "@/components/table-refresh-button"
+import { KakaoTaskDetailDialog } from "@/features/kakao/components/kakao-task-detail-dialog"
 import { ApiError, apiRequest } from "@/lib/api-client"
-import {
-  isTerminalPaymentStatus,
-  paymentStatusLabel,
-} from "@/lib/kakao-status"
+import { formatBeijingDateTime } from "@/lib/date-time"
+import { isTerminalPaymentStatus, paymentStatusLabel } from "@/lib/kakao-status"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
 import {
   Select,
@@ -171,17 +164,6 @@ export function KakaoPage() {
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Kakao 任务</h1>
-        <Button
-          disabled={action.isPending || !rows.length}
-          onClick={() =>
-            action.mutate({ action: "sync", ids: rows.map((task) => task.id) })
-          }
-          size="sm"
-          variant="outline"
-        >
-          <RefreshCw />
-          同步当前页
-        </Button>
       </div>
       <section className="flex min-h-0 flex-1 flex-col border-t">
         <div className="flex flex-wrap items-center gap-2 border-b py-3">
@@ -228,9 +210,6 @@ export function KakaoPage() {
             value={paymentStatus}
           />
           <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              筛选结果 {tasks.data?.total ?? 0} 条
-            </span>
             {selected.length > 0 && (
               <>
                 <span className="text-xs font-medium">
@@ -273,6 +252,25 @@ export function KakaoPage() {
                 </Button>
               </>
             )}
+            <Button
+              disabled={action.isPending || !rows.length}
+              onClick={() =>
+                action.mutate({
+                  action: "sync",
+                  ids: rows.map((task) => task.id),
+                })
+              }
+              size="sm"
+              variant="outline"
+            >
+              <RefreshCw />
+              同步当前页
+            </Button>
+            <TableRefreshButton
+              isRefreshing={tasks.isFetching}
+              label="刷新 Kakao 任务"
+              onRefresh={() => void tasks.refetch()}
+            />
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
@@ -335,7 +333,7 @@ export function KakaoPage() {
                   <TableCell>
                     <StatusBadge
                       status={task.payment_status}
-                        label={paymentStatusLabel(task.payment_status)}
+                      label={paymentStatusLabel(task.payment_status)}
                     />
                   </TableCell>
                   <TableCell>
@@ -358,7 +356,7 @@ export function KakaoPage() {
                     )}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {new Date(task.updated_at).toLocaleString("zh-CN")}
+                    {formatBeijingDateTime(task.updated_at)}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -436,21 +434,14 @@ export function KakaoPage() {
           page={page}
           pageCount={pageCount}
           pageSize={pageSize}
+          total={tasks.data?.total ?? 0}
         />
       </section>
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Kakao 任务详情</DialogTitle>
-            <DialogDescription>
-              本地记录、上游任务与 Kakao 深层状态
-            </DialogDescription>
-          </DialogHeader>
-          <pre className="overflow-auto rounded-sm bg-muted/40 p-3 font-mono text-xs break-all whitespace-pre-wrap">
-            {JSON.stringify(detail.data, null, 2)}
-          </pre>
-        </DialogContent>
-      </Dialog>
+      <KakaoTaskDetailDialog
+        data={detail.data}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
     </div>
   )
 }

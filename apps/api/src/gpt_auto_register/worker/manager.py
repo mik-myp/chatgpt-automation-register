@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import threading
@@ -10,6 +11,7 @@ from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from gpt_auto_register.core.config import get_settings
 from gpt_auto_register.core.redaction import redact_text, redact_value
@@ -34,11 +36,12 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineRun,
     PipelineStatus,
 )
+from gpt_auto_register.db.result import affected_rows
 from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
-from gpt_auto_register.modules.cards.allocator import CardAllocator
+from gpt_auto_register.modules.cards.allocator import CardAllocator, card_allocation_guard
 from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
-from gpt_auto_register.modules.kakao.state import apply_upstream
+from gpt_auto_register.modules.kakao.state import apply_upstream, synchronized_kakao_state
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.runtime_gateway import runtime_call
@@ -106,22 +109,30 @@ def _emit(
     level: str = "info",
     data: dict[str, Any] | None = None,
 ) -> None:
-    with _EVENT_LOCK, SessionLocal() as session:
-        sequence = (
-            session.scalar(select(func.max(JobEvent.sequence)).where(JobEvent.job_id == job_id))
-            or 0
-        ) + 1
-        session.add(
-            JobEvent(
-                job_id=job_id,
-                sequence=sequence,
-                level=level,
-                event_type=event_type,
-                message=redact_text(message, limit=4000),
-                data=redact_value(data or {}),
-            )
-        )
-        session.commit()
+    with _EVENT_LOCK:
+        for _ in range(5):
+            with SessionLocal() as session:
+                sequence = (
+                    session.scalar(
+                        select(func.max(JobEvent.sequence)).where(JobEvent.job_id == job_id)
+                    )
+                    or 0
+                ) + 1
+                session.add(
+                    JobEvent(
+                        job_id=job_id,
+                        sequence=sequence,
+                        level=level,
+                        event_type=event_type,
+                        message=redact_text(message, limit=4000),
+                        data=redact_value(data or {}),
+                    )
+                )
+                try:
+                    session.commit()
+                    return
+                except IntegrityError:
+                    session.rollback()
 
 
 def _legacy_call(
@@ -133,11 +144,7 @@ def _legacy_call(
     max_lines = 2000
     with SessionLocal() as session, suppress(Exception):
         max_lines = SettingsService(session).maintenance_internal().max_runtime_log_lines
-    sink = (
-        (lambda line: _emit(job_id, "runtime_log", line, level="debug"))
-        if job_id
-        else None
-    )
+    sink = (lambda line: _emit(job_id, "runtime_log", line, level="debug")) if job_id else None
     return runtime_call(payload, timeout, log_sink=sink, max_lines=max_lines)
 
 
@@ -253,7 +260,46 @@ class PipelineExecutor:
         return {"status": "completed", "registered": success, "failed": failed}
 
     def _allocate_cards(self, item_ids: list[str]) -> dict[str, str]:
-        with SessionLocal() as session:
+        with card_allocation_guard(), SessionLocal() as session:
+            requested_items = list(
+                session.scalars(select(PipelineItem).where(PipelineItem.id.in_(item_ids)))
+            )
+            run_items = list(
+                session.scalars(
+                    select(PipelineItem).where(PipelineItem.pipeline_run_id == self.run_id)
+                )
+            )
+            reserved_counts = {
+                card.code: allocation.allocated_count
+                for allocation, card in session.execute(
+                    select(PipelineCardAllocation, KakaoCard)
+                    .join(KakaoCard, KakaoCard.id == PipelineCardAllocation.card_id)
+                    .where(PipelineCardAllocation.pipeline_run_id == self.run_id)
+                )
+            }
+            snapshot_counts: dict[str, int] = {}
+            for item in run_items:
+                if item.card_code_snapshot:
+                    snapshot_counts[item.card_code_snapshot] = (
+                        snapshot_counts.get(item.card_code_snapshot, 0) + 1
+                    )
+            if (
+                len(requested_items) == len(item_ids)
+                and all(item.card_code_snapshot for item in requested_items)
+                and all(
+                    reserved_counts.get(code, 0) >= count for code, count in snapshot_counts.items()
+                )
+            ):
+                reserved_mapping = {
+                    item.id: str(item.card_code_snapshot) for item in requested_items
+                }
+                session.close()
+                _emit(
+                    self.job_id,
+                    "cards_allocated",
+                    f"使用创建流水线时预留的 {len(reserved_mapping)} 个卡密名额",
+                )
+                return reserved_mapping
             slots, _ = CardAllocator(session).select(len(item_ids))
             cards = {
                 card.code: card
@@ -264,9 +310,9 @@ class PipelineExecutor:
             for item_id, code in zip(item_ids, slots, strict=True):
                 mapping[item_id] = code
                 counts[code] = counts.get(code, 0) + 1
-                item = session.get(PipelineItem, item_id)
-                if item is not None:
-                    item.card_code_snapshot = code
+                allocated_item = session.get(PipelineItem, item_id)
+                if allocated_item is not None:
+                    allocated_item.card_code_snapshot = code
             for code, count in counts.items():
                 card = cards[code]
                 allocation = session.get(
@@ -336,6 +382,7 @@ class PipelineExecutor:
                 return False
             if account is not None:
                 item.account_email = account.email
+                item.mail_url_snapshot = account.mail_url
             item.status = PipelineItemStatus.REGISTERING
             proxy = str(registration.get("proxy") or "").strip()
             if not proxy:
@@ -513,9 +560,13 @@ class PipelineExecutor:
         card_code: str | None,
         email: str,
     ) -> bool:
+        if not self._wait_until_runnable():
+            return True
         try:
             self._run_export(credential, export)
             if card_code:
+                if not self._wait_until_runnable():
+                    return True
                 try:
                     self._run_kakao(item_id, credential, card_code)
                 except Exception:
@@ -565,18 +616,39 @@ class PipelineExecutor:
 
     def _mark_item_completed(self, item_id: str) -> None:
         with SessionLocal() as session:
-            item = session.get(PipelineItem, item_id)
-            if item is not None:
-                item.status = PipelineItemStatus.COMPLETED
-                item.error = None
+            session.execute(
+                update(PipelineItem)
+                .where(
+                    PipelineItem.id == item_id,
+                    PipelineItem.pipeline_run_id.in_(
+                        select(PipelineRun.id).where(
+                            PipelineRun.id == self.run_id,
+                            PipelineRun.status != PipelineStatus.CANCELED,
+                        )
+                    ),
+                )
+                .values(status=PipelineItemStatus.COMPLETED, error=None)
+            )
             session.commit()
 
     def _save_post_registration_failure(self, item_id: str, message: str) -> None:
         with SessionLocal() as session:
-            item = session.get(PipelineItem, item_id)
-            if item is not None:
-                item.status = PipelineItemStatus.FAILED
-                item.error = f"注册成功，后置任务失败：{message}"
+            session.execute(
+                update(PipelineItem)
+                .where(
+                    PipelineItem.id == item_id,
+                    PipelineItem.pipeline_run_id.in_(
+                        select(PipelineRun.id).where(
+                            PipelineRun.id == self.run_id,
+                            PipelineRun.status != PipelineStatus.CANCELED,
+                        )
+                    ),
+                )
+                .values(
+                    status=PipelineItemStatus.FAILED,
+                    error=f"注册成功，后置任务失败：{message}",
+                )
+            )
             session.commit()
 
     def _save_registration_success(
@@ -707,15 +779,33 @@ class PipelineExecutor:
             and eligibility_state == "eligible"
             and not eligibility_error
         )
+        if not self._wait_until_runnable():
+            return
         if not is_eligible:
             with SessionLocal() as session:
                 item = session.get(PipelineItem, item_id)
                 if item is not None:
-                    item.status = PipelineItemStatus.SKIPPED
-                    item.eligibility_state = eligibility_state
-                    item.error = eligibility_error or None
+                    changed = affected_rows(
+                        session.execute(
+                            update(PipelineItem)
+                            .where(
+                                PipelineItem.id == item_id,
+                                PipelineItem.pipeline_run_id.in_(
+                                    select(PipelineRun.id).where(
+                                        PipelineRun.id == self.run_id,
+                                        PipelineRun.status != PipelineStatus.CANCELED,
+                                    )
+                                ),
+                            )
+                            .values(
+                                status=PipelineItemStatus.SKIPPED,
+                                eligibility_state=eligibility_state,
+                                error=eligibility_error or None,
+                            )
+                        )
+                    )
                     saved = session.get(Credential, item.account_email)
-                    if saved is not None:
+                    if changed and saved is not None:
                         saved.metadata_json = {
                             **(saved.metadata_json or {}),
                             "kakao_pipeline": {
@@ -781,6 +871,7 @@ class PipelineExecutor:
                         pipeline_run_id=self.run_id,
                         pipeline_item_id=item_id,
                         card_id=card.id,
+                        card_code_snapshot=card.code,
                         email=item.account_email or "",
                     )
                     apply_upstream(saved_task, task)
@@ -793,7 +884,19 @@ class PipelineExecutor:
                 allocation.created_count = (allocation.created_count or 0) + len(task_ids)
                 allocation.duplicate_count = (allocation.duplicate_count or 0) + len(duplicate_ids)
             run.kakao_task_count = (run.kakao_task_count or 0) + len(task_ids)
-            item.status = PipelineItemStatus.COMPLETED
+            session.execute(
+                update(PipelineItem)
+                .where(
+                    PipelineItem.id == item_id,
+                    PipelineItem.pipeline_run_id.in_(
+                        select(PipelineRun.id).where(
+                            PipelineRun.id == self.run_id,
+                            PipelineRun.status != PipelineStatus.CANCELED,
+                        )
+                    ),
+                )
+                .values(status=PipelineItemStatus.COMPLETED, error=None)
+            )
             item.eligibility_state = eligibility_state
             saved = session.get(Credential, item.account_email)
             if saved is not None:
@@ -829,16 +932,27 @@ class AccountSecurityExecutor:
         self.job_id = job_id
         self.action = str(payload.get("action") or "")
         self.emails = [str(value).strip().lower() for value in payload.get("emails", [])]
+        self.pipeline_run_id = str(payload.get("pipeline_run_id") or "")
 
     def execute(self) -> dict[str, Any]:
-        succeeded = failed = 0
+        succeeded = failed = skipped = 0
+        self._start_pipeline()
+        self._save_progress(succeeded, failed, skipped)
         for email in self.emails:
+            if not self._job_running():
+                break
+            self._mark_item_running(email)
+            item_error = ""
+            item_skipped = False
             try:
-                self._execute_one(email)
-                succeeded += 1
+                if self._execute_one(email):
+                    succeeded += 1
+                else:
+                    skipped += 1
+                    item_skipped = True
             except Exception as error:
                 failed += 1
-                self._record(email, "failed", str(error))
+                item_error = str(error)
                 _emit(
                     self.job_id,
                     "account_security_failed",
@@ -846,35 +960,249 @@ class AccountSecurityExecutor:
                     level="error",
                     data={"email": email, "action": self.action},
                 )
-        return {"succeeded": succeeded, "failed": failed, "total": len(self.emails)}
+            self._save_item_progress(email, item_error, skipped=item_skipped)
+            self._save_progress(succeeded, failed, skipped)
+        self._finish_pipeline()
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "skipped": skipped,
+            "total": len(self.emails),
+        }
 
-    def _execute_one(self, email: str) -> None:
+    def _save_progress(self, succeeded: int, failed: int, skipped: int) -> None:
+        with SessionLocal() as session:
+            job = session.get(Job, self.job_id)
+            if job is None or job.status != JobStatus.RUNNING:
+                return
+            job.result = {
+                "succeeded": succeeded,
+                "failed": failed,
+                "skipped": skipped,
+                "total": len(self.emails),
+            }
+            session.commit()
+
+    def _job_running(self) -> bool:
+        with SessionLocal() as session:
+            job = session.get(Job, self.job_id)
+            return job is not None and job.status == JobStatus.RUNNING
+
+    def _start_pipeline(self) -> None:
+        if not self.pipeline_run_id:
+            return
+        with SessionLocal() as session:
+            run = session.get(PipelineRun, self.pipeline_run_id)
+            if run is None or run.status == PipelineStatus.CANCELED:
+                return
+            run.status = PipelineStatus.RUNNING
+            run.started_at = run.started_at or utc_now()
+            session.commit()
+
+    def _mark_item_running(self, email: str) -> None:
+        if not self.pipeline_run_id:
+            return
+        with SessionLocal() as session:
+            item = session.scalar(
+                select(PipelineItem).where(
+                    PipelineItem.pipeline_run_id == self.pipeline_run_id,
+                    PipelineItem.account_email == email,
+                )
+            )
+            if item is not None:
+                item.status = PipelineItemStatus.REGISTERING
+                item.error = None
+                item.security_error = None
+                session.commit()
+
+    def _save_item_progress(self, email: str, error: str, *, skipped: bool) -> None:
+        if not self.pipeline_run_id:
+            return
+        with SessionLocal() as session:
+            item = session.scalar(
+                select(PipelineItem).where(
+                    PipelineItem.pipeline_run_id == self.pipeline_run_id,
+                    PipelineItem.account_email == email,
+                )
+            )
+            credential = session.get(Credential, email)
+            if item is None:
+                return
+            metadata = credential.metadata_json if credential else {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+            security = metadata.get("account_security")
+            security = security if isinstance(security, dict) else {}
+            password = security.get("password")
+            password = password if isinstance(password, dict) else {}
+            mfa = security.get("mfa")
+            mfa = mfa if isinstance(mfa, dict) else {}
+            registration = SettingsService(session).registration_internal()
+            password_status = str(
+                password.get("status")
+                or ("set" if credential and credential.password else "not_set")
+            )
+            mfa_status = str(
+                mfa.get("status")
+                or ("enabled" if credential and credential.totp_secret else "not_enabled")
+            )
+            password_complete = (
+                bool(credential and credential.password)
+                or (registration.password_mode == "fixed" and bool(registration.fixed_password))
+            ) and password_status in {"set", "available"}
+            mfa_complete = bool(credential and credential.totp_secret) and mfa_status == "enabled"
+            item.password_status = password_status
+            item.mfa_status = mfa_status
+            item.security_error = error or None
+            item.error = error or None
+            item.status = (
+                PipelineItemStatus.SKIPPED
+                if skipped and password_complete and mfa_complete
+                else PipelineItemStatus.COMPLETED
+                if password_complete and mfa_complete
+                else PipelineItemStatus.FAILED
+            )
+            self._update_pipeline_counts(session)
+            session.commit()
+
+    def _update_pipeline_counts(self, session: Any) -> None:
+        run = session.get(PipelineRun, self.pipeline_run_id)
+        if run is None:
+            return
+        statuses = list(
+            session.scalars(
+                select(PipelineItem.status).where(
+                    PipelineItem.pipeline_run_id == self.pipeline_run_id
+                )
+            )
+        )
+        run.registered_count = sum(
+            value in {PipelineItemStatus.COMPLETED, PipelineItemStatus.SKIPPED}
+            for value in statuses
+        )
+        run.failed_count = sum(value == PipelineItemStatus.FAILED for value in statuses)
+
+    def _finish_pipeline(self) -> None:
+        if not self.pipeline_run_id:
+            return
+        with SessionLocal() as session:
+            run = session.get(PipelineRun, self.pipeline_run_id)
+            if run is None or run.status == PipelineStatus.CANCELED:
+                return
+            self._update_pipeline_counts(session)
+            run.status = (
+                PipelineStatus.FAILED
+                if run.registered_count == 0 and run.failed_count > 0
+                else PipelineStatus.COMPLETED
+            )
+            run.finished_at = utc_now()
+            session.commit()
+
+    def _execute_one(self, email: str) -> bool:
+        if self.action != "set_password_and_mfa":
+            self._execute_action(email, self.action)
+            return True
+
+        with SessionLocal() as session:
+            credential = session.get(Credential, email)
+            if credential is None:
+                raise RuntimeError("ChatGPT 凭据不存在")
+            metadata = credential.metadata_json or {}
+            security = dict(metadata.get("account_security") or {})
+            password = dict(security.get("password") or {})
+            mfa = dict(security.get("mfa") or {})
+            registration = SettingsService(session).registration_internal()
+            password_value_available = bool(credential.password) or (
+                registration.password_mode == "fixed" and bool(registration.fixed_password)
+            )
+            password_status = str(
+                password.get("status") or ("set" if credential.password else "not_set")
+            )
+            mfa_status = str(
+                mfa.get("status") or ("enabled" if credential.totp_secret else "not_enabled")
+            )
+            password_complete = password_value_available and password_status in {
+                "set",
+                "available",
+            }
+            mfa_complete = bool(credential.totp_secret) and mfa_status == "enabled"
+
+        if password_complete and mfa_complete:
+            _emit(
+                self.job_id,
+                "account_security_skipped",
+                f"密码和 MFA 均已完成，跳过 {email}",
+                data={"email": email, "action": self.action},
+            )
+            return False
+        if password_complete:
+            _emit(
+                self.job_id,
+                "account_security_step_skipped",
+                f"密码已设置，跳过密码操作 {email}",
+                data={"email": email, "action": "set_password"},
+            )
+        else:
+            self._execute_action(email, "set_password")
+        if mfa_complete:
+            _emit(
+                self.job_id,
+                "account_security_step_skipped",
+                f"MFA 已启用，跳过 MFA 操作 {email}",
+                data={"email": email, "action": "enable_mfa"},
+            )
+        else:
+            self._execute_action(email, "enable_mfa")
+        return True
+
+    def _execute_action(self, email: str, action: str) -> None:
+        try:
+            self._run_action(email, action)
+        except Exception as error:
+            self._record(email, action, "failed", str(error))
+            raise
+
+    def _run_action(self, email: str, action: str) -> None:
         with SessionLocal() as session:
             account = session.get(OutlookAccount, email)
             credential = session.get(Credential, email)
             if account is None or credential is None:
                 raise RuntimeError("账号缺少邮箱或 ChatGPT 凭据")
             registration = SettingsService(session).registration_internal().model_dump()
-            if self.action == "enable_mfa":
+            configured_password = (
+                str(registration.get("fixed_password") or "")
+                if registration.get("password_mode") == "fixed"
+                else ""
+            )
+            proxy_pool = [
+                value.strip()
+                for value in str(registration.get("proxy_pool") or "").splitlines()
+                if value.strip()
+            ]
+            if proxy_pool:
+                digest = hashlib.sha256(email.encode("utf-8")).digest()
+                registration["proxy"] = proxy_pool[
+                    int.from_bytes(digest[:8], "big") % len(proxy_pool)
+                ]
+            if action == "enable_mfa":
                 registration.update(password_mode="none", enable_authenticator_mfa=True)
             elif registration.get("password_mode") == "none":
                 registration["password_mode"] = "random"
             mail = SettingsService(session).mail_internal()
             account_data = _account_payload(account)
             credential_data = {
-                "password": credential.password or "",
+                "password": credential.password or configured_password,
                 "device_id": credential.device_id or "",
                 "cookie_header": credential.cookie_header or "",
             }
             has_totp_secret = bool(credential.totp_secret)
-        operation_label = "设置 ChatGPT 密码" if self.action == "set_password" else "启用或验证 MFA"
+        operation_label = "设置 ChatGPT 密码" if action == "set_password" else "启用或验证 MFA"
         _emit(
             self.job_id,
             "account_security_started",
             f"开始{operation_label} {email}",
-            data={"email": email, "action": self.action},
+            data={"email": email, "action": action},
         )
-        if self.action == "enable_mfa" and has_totp_secret:
+        if action == "enable_mfa" and has_totp_secret:
             result = _legacy_call(
                 {
                     "action": "verify_mfa",
@@ -886,17 +1214,17 @@ class AccountSecurityExecutor:
             )
             if not result.get("verified"):
                 raise RuntimeError(str(result.get("error") or "MFA 状态验证失败"))
-            self._record(email, "enabled", "")
+            self._record(email, action, "enabled", "")
             _emit(
                 self.job_id,
                 "account_security_succeeded",
                 f"MFA 服务端状态已验证 {email}",
-                data={"email": email, "action": self.action},
+                data={"email": email, "action": action},
             )
             return
         result = _legacy_call(
             {
-                "action": self.action,
+                "action": action,
                 "account": account_data,
                 "credential": credential_data,
                 "registration": registration,
@@ -907,10 +1235,10 @@ class AccountSecurityExecutor:
         value = dict(result.get("credential") or {})
         self._persist_session(email, value)
         if not result.get("ok"):
-            raise RuntimeError(str(result.get("error") or "MFA 操作失败"))
+            raise RuntimeError(str(result.get("error") or f"{operation_label}失败"))
         security = value.get("security") if isinstance(value.get("security"), dict) else {}
-        security_key = "password" if self.action == "set_password" else "mfa"
-        expected_status = "set" if self.action == "set_password" else "enabled"
+        security_key = "password" if action == "set_password" else "mfa"
+        expected_status = "set" if action == "set_password" else "enabled"
         outcome = security.get(security_key) if isinstance(security, dict) else {}
         if not isinstance(outcome, dict) or outcome.get("status") != expected_status:
             raise RuntimeError(
@@ -946,17 +1274,23 @@ class AccountSecurityExecutor:
             self.job_id,
             "account_security_succeeded",
             f"{operation_label}成功并验证 {email}",
-            data={"email": email, "action": self.action},
+            data={"email": email, "action": action},
         )
 
-    def _record(self, email: str, status_value: str, error: str) -> None:
+    def _record(
+        self,
+        email: str,
+        action: str,
+        status_value: str,
+        error: str,
+    ) -> None:
         with SessionLocal() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 return
             metadata = credential.metadata_json or {}
             security = dict(metadata.get("account_security") or {})
-            key = "password" if self.action == "set_password" else "mfa"
+            key = "password" if action == "set_password" else "mfa"
             security[key] = {
                 "requested": True,
                 "status": status_value,
@@ -1014,10 +1348,7 @@ class WorkerManager:
                     or_(
                         Job.status == JobStatus.QUEUED,
                         (Job.status == JobStatus.RUNNING)
-                        & (
-                            Job.lease_expires_at.is_(None)
-                            | (Job.lease_expires_at < now)
-                        ),
+                        & (Job.lease_expires_at.is_(None) | (Job.lease_expires_at < now)),
                     ),
                     Job.available_at <= now,
                 )
@@ -1049,21 +1380,44 @@ class WorkerManager:
         error: str | None = None,
     ) -> None:
         with SessionLocal() as session:
-            job = session.get(Job, job_id)
-            if job is None or job.status == JobStatus.CANCELED:
-                return
-            if error and job.attempts < job.max_attempts:
-                job.status = JobStatus.QUEUED
-                delay = min(300, 5 * (2 ** max(0, job.attempts - 1)))
-                job.available_at = utc_now() + timedelta(seconds=delay)
-                job.error = error
-            else:
-                job.status = JobStatus.FAILED if error else JobStatus.SUCCEEDED
-                job.error = error
-                job.result = result or {}
-                job.finished_at = utc_now()
-            job.lease_owner = None
-            job.lease_expires_at = None
+            ownership = (
+                Job.id == job_id,
+                Job.status == JobStatus.RUNNING,
+                Job.lease_owner == self.worker_id,
+            )
+            if error:
+                job = session.get(Job, job_id)
+                attempts = job.attempts if job is not None else 0
+                delay = min(300, 5 * (2 ** max(0, attempts - 1)))
+                requeued = affected_rows(
+                    session.execute(
+                        update(Job)
+                        .where(*ownership, Job.attempts < Job.max_attempts)
+                        .values(
+                            status=JobStatus.QUEUED,
+                            available_at=utc_now() + timedelta(seconds=delay),
+                            error=error,
+                            finished_at=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                        )
+                    )
+                )
+                if requeued:
+                    session.commit()
+                    return
+            session.execute(
+                update(Job)
+                .where(*ownership)
+                .values(
+                    status=JobStatus.FAILED if error else JobStatus.SUCCEEDED,
+                    error=error,
+                    result=result or {},
+                    finished_at=utc_now(),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+            )
             session.commit()
 
     def _heartbeat(self, job_id: str, stopped: threading.Event) -> None:
@@ -1079,6 +1433,7 @@ class WorkerManager:
                 job.lease_expires_at = utc_now() + timedelta(minutes=2)
                 session.commit()
 
+    @synchronized_kakao_state
     def _sync_kakao_tasks(self) -> None:
         with SessionLocal() as session:
             settings = SettingsService(session).kakao_internal()

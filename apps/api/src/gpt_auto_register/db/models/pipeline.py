@@ -23,6 +23,11 @@ class PipelineStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class PipelineRunKind(StrEnum):
+    REGISTRATION = "registration"
+    ACCOUNT_SECURITY = "account_security"
+
+
 class PipelineItemStatus(StrEnum):
     SCHEDULED = "scheduled"
     REGISTERING = "registering"
@@ -37,6 +42,15 @@ class PipelineRun(TimestampMixin, Base):
     __tablename__ = "pipeline_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[PipelineRunKind] = mapped_column(
+        enum_type(PipelineRunKind, "pipeline_run_kind"),
+        default=PipelineRunKind.REGISTRATION,
+        index=True,
+        nullable=False,
+    )
+    source_pipeline_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_runs.id", ondelete="SET NULL"), index=True
+    )
     status: Mapped[PipelineStatus] = mapped_column(
         enum_type(PipelineStatus, "pipeline_status"),
         default=PipelineStatus.QUEUED,
@@ -67,6 +81,7 @@ class PipelineItem(TimestampMixin, Base):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     account_email: Mapped[str | None] = mapped_column(String(320), index=True)
+    mail_url_snapshot: Mapped[str | None] = mapped_column(Text)
     registration_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("registration_runs.id", ondelete="SET NULL"), index=True
     )
@@ -78,4 +93,7 @@ class PipelineItem(TimestampMixin, Base):
         nullable=False,
     )
     eligibility_state: Mapped[str | None] = mapped_column(String(64))
+    password_status: Mapped[str | None] = mapped_column(String(32))
+    mfa_status: Mapped[str | None] = mapped_column(String(32))
+    security_error: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)

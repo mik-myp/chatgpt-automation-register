@@ -49,6 +49,8 @@ export interface AccountDetail {
   password_status?: string;
   mfa_status?: string;
   security_error?: string | null;
+  chatgpt_password?: string | null;
+  totp_secret?: string | null;
   password: string | null;
   client_id: string | null;
   refresh_token: string | null;
@@ -67,6 +69,8 @@ export interface AccountSummary {
   password_status?: string;
   mfa_status?: string;
   security_error?: string | null;
+  chatgpt_password?: string | null;
+  totp_secret?: string | null;
 }
 
 export interface AccountListResponse {
@@ -98,6 +102,67 @@ export interface AccountMaintenanceRequest {
 export interface AccountMaintenanceResponse {
   processed: number;
   skipped?: number;
+}
+
+export type JobStatus = typeof JobStatus[keyof typeof JobStatus];
+
+
+export const JobStatus = {
+  queued: 'queued',
+  running: 'running',
+  succeeded: 'succeeded',
+  failed: 'failed',
+  canceled: 'canceled',
+} as const;
+
+export type AccountSecurityJobEventData = { [key: string]: unknown };
+
+export interface AccountSecurityJobEvent {
+  id: number;
+  sequence: number;
+  level: string;
+  event_type: string;
+  message: string;
+  data: AccountSecurityJobEventData;
+  created_at: string;
+}
+
+export interface AccountSecurityJobDetail {
+  id: string;
+  status: JobStatus;
+  action: string;
+  emails: string[];
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  events: AccountSecurityJobEvent[];
+}
+
+export interface AccountSecurityJobSummary {
+  id: string;
+  status: JobStatus;
+  action: string;
+  emails: string[];
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export interface AccountSecurityJobListResponse {
+  items: AccountSecurityJobSummary[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface AccountStats {
@@ -231,6 +296,7 @@ export const BulkAccountAction = {
   delete: 'delete',
   set_password: 'set_password',
   enable_mfa: 'enable_mfa',
+  set_password_and_mfa: 'set_password_and_mfa',
 } as const;
 
 export interface BulkAccountRequest {
@@ -272,6 +338,7 @@ export const BulkPipelineAction = {
   cancel: 'cancel',
   pause: 'pause',
   resume: 'resume',
+  delete: 'delete',
 } as const;
 
 export interface BulkPipelineRequest {
@@ -294,22 +361,9 @@ export interface BulkResultResponse {
   processed: number;
 }
 
-export type CardBatchStatus = typeof CardBatchStatus[keyof typeof CardBatchStatus];
-
-
-export const CardBatchStatus = {
-  ready: 'ready',
-  consumed: 'consumed',
-  archived: 'archived',
-} as const;
-
 export interface CardInventoryItem {
   id: string;
   code: string;
-  batch_id: string;
-  batch_name: string;
-  batch_status: CardBatchStatus;
-  position: number;
   active: boolean;
   run_count: number;
   allocated_count: number;
@@ -335,7 +389,6 @@ export interface CardInventoryStats {
   total: number;
   active: number;
   inactive: number;
-  batches: number;
 }
 
 export interface CardSelectionRequest {
@@ -365,6 +418,19 @@ export interface ClaimAccountRequest {
   email?: string | null;
 }
 
+export interface PipelineDeliveryCopyMark {
+  email: string;
+  fingerprint: string;
+}
+
+export interface ConfirmPipelineDeliveryCopiesRequest {
+  copy_marks?: PipelineDeliveryCopyMark[];
+}
+
+export interface ConfirmPipelineDeliveryCopiesResponse {
+  processed: number;
+}
+
 export interface ConnectionTestResponse {
   message: string;
 }
@@ -387,6 +453,22 @@ export interface CopyPipelineDeliveriesResponse {
   text: string;
   copied: number;
   skipped: number;
+  security_credentials?: number;
+  mail_access?: number;
+  missing_mail_url?: number;
+  duplicates?: number;
+  plus_restricted?: number;
+  copy_marks?: PipelineDeliveryCopyMark[];
+}
+
+export interface CopySecurityCredentialsRequest {
+  item_ids?: string[];
+  all_completed?: boolean;
+}
+
+export interface CreateSecurityPipelineRequest {
+  /** @minItems 1 */
+  emails: string[];
 }
 
 export interface DashboardJobStats {
@@ -469,8 +551,10 @@ export interface DeliveryFormatSettings {
 }
 
 export interface DeliveryCopySettings {
+  only_copy_plus?: boolean;
   payment_links?: DeliveryFormatSettings;
-  account_info?: DeliveryFormatSettings;
+  mail_access?: DeliveryFormatSettings;
+  security_credentials?: DeliveryFormatSettings;
 }
 
 export type RegistrationResultDetailMetadataJson = { [key: string]: unknown };
@@ -564,12 +648,9 @@ export interface ImportAccountsResponse {
 export interface ImportCardsRequest {
   /** @minLength 1 */
   text: string;
-  /** @maxLength 128 */
-  batch_name?: string;
 }
 
 export interface ImportCardsResponse {
-  batch_id: string | null;
   inserted: number;
   duplicates: number;
 }
@@ -642,7 +723,8 @@ export interface KakaoTaskSummary {
   upstream_job_id: string;
   pipeline_run_id: string | null;
   pipeline_item_id: string | null;
-  card_id: string;
+  card_id: string | null;
+  card_code_snapshot: string | null;
   email: string;
   status: KakaoTaskStatus;
   payment_status: string | null;
@@ -708,6 +790,14 @@ export interface MaintenanceSettings {
   max_runtime_log_lines?: number;
 }
 
+export interface PipelineCardAssignmentSummary {
+  task_id: string;
+  email: string;
+  status: KakaoTaskStatus;
+  payment_status: string | null;
+  card_charged: boolean | null;
+}
+
 export interface PipelineCardAllocationSummary {
   card_id: string;
   card_code: string;
@@ -715,7 +805,17 @@ export interface PipelineCardAllocationSummary {
   created_count: number;
   duplicate_count: number;
   failed_count: number;
+  assignments?: PipelineCardAssignmentSummary[];
 }
+
+export type PipelineDeliverySummaryAccountFormat = typeof PipelineDeliverySummaryAccountFormat[keyof typeof PipelineDeliverySummaryAccountFormat];
+
+
+export const PipelineDeliverySummaryAccountFormat = {
+  security_credentials: 'security_credentials',
+  mail_access: 'mail_access',
+  unavailable: 'unavailable',
+} as const;
 
 export interface PipelineDeliverySummary {
   task_id: string;
@@ -730,7 +830,16 @@ export interface PipelineDeliverySummary {
   mail_url: string | null;
   chatgpt_password: string | null;
   totp_secret: string | null;
+  password_status: string;
+  mfa_status: string;
+  account_format: PipelineDeliverySummaryAccountFormat;
+  account_missing_reason: string | null;
   deliverable: boolean;
+  plus_state?: string | null;
+  plus_label?: string | null;
+  plus_is_active?: boolean | null;
+  plus_error?: string | null;
+  plus_checked_at?: string | null;
 }
 
 export interface PipelineDeliveryListResponse {
@@ -778,7 +887,15 @@ export interface PipelineItemSummary {
   registration_run_id: string | null;
   status: PipelineItemStatus;
   eligibility_state: string | null;
+  password_status: string | null;
+  mfa_status: string | null;
+  security_error: string | null;
   error: string | null;
+  plus_state?: string | null;
+  plus_label?: string | null;
+  plus_is_active?: boolean | null;
+  plus_error?: string | null;
+  plus_checked_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -809,6 +926,14 @@ export interface PipelineRunCreateRequest {
 
 export type PipelineRunDetailConfigSnapshot = { [key: string]: unknown };
 
+export type PipelineRunKind = typeof PipelineRunKind[keyof typeof PipelineRunKind];
+
+
+export const PipelineRunKind = {
+  registration: 'registration',
+  account_security: 'account_security',
+} as const;
+
 export type PipelineStatus = typeof PipelineStatus[keyof typeof PipelineStatus];
 
 
@@ -823,6 +948,8 @@ export const PipelineStatus = {
 
 export interface PipelineRunDetail {
   id: string;
+  kind: PipelineRunKind;
+  source_pipeline_run_id: string | null;
   status: PipelineStatus;
   mode: string;
   target_count: number;
@@ -842,6 +969,8 @@ export interface PipelineRunDetail {
 
 export interface PipelineRunSummary {
   id: string;
+  kind: PipelineRunKind;
+  source_pipeline_run_id: string | null;
   status: PipelineStatus;
   mode: string;
   target_count: number;
@@ -865,10 +994,15 @@ export interface PipelineRunListResponse {
 
 export interface PlusCheckItem {
   email: string;
-  status: string;
+  state: string;
   label: string;
-  eligible?: boolean | null;
+  is_plus?: boolean | null;
   error?: string;
+  account_id?: string;
+  plan_type?: string;
+  subscription_plan?: string;
+  has_active_subscription?: boolean | null;
+  expires_at?: string | null;
 }
 
 export interface PlusCheckRequest {
@@ -906,15 +1040,22 @@ export interface PublishResultsResponse {
 export interface RegistrationResultSummary {
   email: string;
   has_password: boolean;
+  chatgpt_password?: string | null;
+  totp_secret?: string | null;
   has_access_token: boolean;
   has_session_token: boolean;
   has_refresh_token: boolean;
   password_status?: string | null;
   mfa_status?: string | null;
-  plus_eligible?: boolean | null;
   plus_state?: string | null;
+  plus_label?: string | null;
+  plus_is_active?: boolean | null;
   plus_error?: string | null;
   plus_checked_at?: string | null;
+  plus_plan_type?: string | null;
+  plus_subscription_plan?: string | null;
+  plus_has_active_subscription?: boolean | null;
+  plus_expires_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -966,6 +1107,26 @@ export interface RegistrationSettings {
 export interface RetryPipelineItemsRequest {
   /** @minItems 1 */
   item_ids: string[];
+}
+
+export interface SecurityPipelineCandidate {
+  email: string;
+  password_status: string;
+  mfa_status: string;
+  security_error?: string | null;
+  needs_password: boolean;
+  needs_mfa: boolean;
+}
+
+export interface SecurityPipelineCandidateList {
+  items: SecurityPipelineCandidate[];
+}
+
+export interface SecurityPipelineCandidatePage {
+  items: SecurityPipelineCandidate[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface SmsCountry {
@@ -1100,7 +1261,29 @@ export interface SystemSettingsUpdate {
 
 export type ListAccountsApiAccountsGetParams = {
 status?: AccountStatus | null;
+security_filter?: ListAccountsApiAccountsGetSecurityFilter;
 search?: string;
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * @minimum 0
+ */
+offset?: number;
+};
+
+export type ListAccountsApiAccountsGetSecurityFilter = typeof ListAccountsApiAccountsGetSecurityFilter[keyof typeof ListAccountsApiAccountsGetSecurityFilter];
+
+
+export const ListAccountsApiAccountsGetSecurityFilter = {
+  all: 'all',
+  incomplete: 'incomplete',
+  complete: 'complete',
+} as const;
+
+export type ListAccountSecurityJobsApiAccountsSecurityJobsGetParams = {
 /**
  * @minimum 1
  * @maximum 200
@@ -1128,6 +1311,19 @@ offset?: number;
 
 export type ListPipelineRunsApiPipelinesRunsGetParams = {
 status?: PipelineStatus | null;
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * @minimum 0
+ */
+offset?: number;
+};
+
+export type ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams = {
+search?: string;
 /**
  * @minimum 1
  * @maximum 200
@@ -1201,9 +1397,9 @@ export const ListResultsApiResultsGetTokenFilter = {
   access: 'access',
   session: 'session',
   refresh: 'refresh',
-  plus_eligible: 'plus_eligible',
-  plus_ineligible: 'plus_ineligible',
-  plus_unchecked: 'plus_unchecked',
+  plus: 'plus',
+  not_plus: 'not_plus',
+  plus_unknown: 'plus_unknown',
 } as const;
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
@@ -1421,6 +1617,145 @@ export function useGetAccountStatsApiAccountsStatsGet<TData = Awaited<ReturnType
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetAccountStatsApiAccountsStatsGetQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary List Account Security Jobs
+ */
+export const listAccountSecurityJobsApiAccountsSecurityJobsGet = (
+    params?: ListAccountSecurityJobsApiAccountsSecurityJobsGetParams,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<AccountSecurityJobListResponse>(
+      {url: `/api/accounts/security-jobs`, method: 'GET',
+        params, signal
+    },
+      options);
+    }
+
+
+
+
+export const getListAccountSecurityJobsApiAccountsSecurityJobsGetQueryKey = (params?: ListAccountSecurityJobsApiAccountsSecurityJobsGetParams,) => {
+    return [
+    `/api/accounts/security-jobs`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListAccountSecurityJobsApiAccountsSecurityJobsGetQueryOptions = <TData = Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>, TError = HTTPValidationError>(params?: ListAccountSecurityJobsApiAccountsSecurityJobsGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListAccountSecurityJobsApiAccountsSecurityJobsGetQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>> = ({ signal }) => listAccountSecurityJobsApiAccountsSecurityJobsGet(params, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListAccountSecurityJobsApiAccountsSecurityJobsGetQueryResult = NonNullable<Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>>
+export type ListAccountSecurityJobsApiAccountsSecurityJobsGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary List Account Security Jobs
+ */
+
+export function useListAccountSecurityJobsApiAccountsSecurityJobsGet<TData = Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>, TError = HTTPValidationError>(
+ params?: ListAccountSecurityJobsApiAccountsSecurityJobsGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAccountSecurityJobsApiAccountsSecurityJobsGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListAccountSecurityJobsApiAccountsSecurityJobsGetQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Get Account Security Job
+ */
+export const getAccountSecurityJobApiAccountsSecurityJobsJobIdGet = (
+    jobId: string,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<AccountSecurityJobDetail>(
+      {url: `/api/accounts/security-jobs/${jobId}`, method: 'GET', signal
+    },
+      options);
+    }
+
+
+
+
+export const getGetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryKey = (jobId: string,) => {
+    return [
+    `/api/accounts/security-jobs/${jobId}`
+    ] as const;
+    }
+
+
+export const getGetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryOptions = <TData = Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>, TError = HTTPValidationError>(jobId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryKey(jobId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>> = ({ signal }) => getAccountSecurityJobApiAccountsSecurityJobsJobIdGet(jobId, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: jobId !== null && jobId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryResult = NonNullable<Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>>
+export type GetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary Get Account Security Job
+ */
+
+export function useGetAccountSecurityJobApiAccountsSecurityJobsJobIdGet<TData = Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>, TError = HTTPValidationError>(
+ jobId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAccountSecurityJobApiAccountsSecurityJobsJobIdGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAccountSecurityJobApiAccountsSecurityJobsJobIdGetQueryOptions(jobId,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 
@@ -2624,6 +2959,141 @@ export const useBulkPipelineActionApiPipelinesRunsBatchPost = <TError = HTTPVali
     }
 
 /**
+ * @summary List Global Security Pipeline Candidates
+ */
+export const listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet = (
+    params?: ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<SecurityPipelineCandidatePage>(
+      {url: `/api/pipelines/runs/security-candidates`, method: 'GET',
+        params, signal
+    },
+      options);
+    }
+
+
+
+
+export const getListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryKey = (params?: ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams,) => {
+    return [
+    `/api/pipelines/runs/security-candidates`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryOptions = <TData = Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>, TError = HTTPValidationError>(params?: ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>> = ({ signal }) => listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet(params, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryResult = NonNullable<Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>>
+export type ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary List Global Security Pipeline Candidates
+ */
+
+export function useListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet<TData = Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>, TError = HTTPValidationError>(
+ params?: ListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListGlobalSecurityPipelineCandidatesApiPipelinesRunsSecurityCandidatesGetQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Create Global Security Pipeline Run
+ */
+export const createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost = (
+    createSecurityPipelineRequest: CreateSecurityPipelineRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<PipelineRunSummary>(
+      {url: `/api/pipelines/runs/security-runs`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: createSecurityPipelineRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getCreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>, TError,{data: CreateSecurityPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>, TError,{data: CreateSecurityPipelineRequest}, TContext> => {
+
+const mutationKey = ['createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>, {data: CreateSecurityPipelineRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPostMutationResult = NonNullable<Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>>
+    export type CreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPostMutationBody = CreateSecurityPipelineRequest
+    export type CreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Create Global Security Pipeline Run
+ */
+export const useCreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>, TError,{data: CreateSecurityPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPost>>,
+        TError,
+        {data: CreateSecurityPipelineRequest},
+        TContext
+      > => {
+      return useMutation(getCreateGlobalSecurityPipelineRunApiPipelinesRunsSecurityRunsPostMutationOptions(options));
+    }
+
+/**
  * @summary List Pipeline Events
  */
 export const listPipelineEventsApiPipelinesRunsRunIdEventsGet = (
@@ -2764,6 +3234,207 @@ export const useRetryPipelineItemsApiPipelinesRunsRunIdItemsRetryPost = <TError 
     }
 
 /**
+ * @summary List Security Pipeline Candidates
+ */
+export const listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet = (
+    runId: string,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<SecurityPipelineCandidateList>(
+      {url: `/api/pipelines/runs/${runId}/security-candidates`, method: 'GET', signal
+    },
+      options);
+    }
+
+
+
+
+export const getListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryKey = (runId: string,) => {
+    return [
+    `/api/pipelines/runs/${runId}/security-candidates`
+    ] as const;
+    }
+
+
+export const getListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryOptions = <TData = Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>, TError = HTTPValidationError>(runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryKey(runId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>> = ({ signal }) => listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet(runId, requestOptions, signal);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: runId !== null && runId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryResult = NonNullable<Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>>
+export type ListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryError = HTTPValidationError
+
+
+/**
+ * @summary List Security Pipeline Candidates
+ */
+
+export function useListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet<TData = Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>, TError = HTTPValidationError>(
+ runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGet>>, TError, TData>, request?: SecondParameter<typeof orvalRequest>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListSecurityPipelineCandidatesApiPipelinesRunsRunIdSecurityCandidatesGetQueryOptions(runId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+/**
+ * @summary Create Security Pipeline Run
+ */
+export const createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost = (
+    runId: string,
+    createSecurityPipelineRequest: CreateSecurityPipelineRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<PipelineRunSummary>(
+      {url: `/api/pipelines/runs/${runId}/security-runs`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: createSecurityPipelineRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getCreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>, TError,{runId: string;data: CreateSecurityPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>, TError,{runId: string;data: CreateSecurityPipelineRequest}, TContext> => {
+
+const mutationKey = ['createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>, {runId: string;data: CreateSecurityPipelineRequest}> = (props) => {
+          const {runId,data} = props ?? {};
+
+          return  createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost(runId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationResult = NonNullable<Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>>
+    export type CreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationBody = CreateSecurityPipelineRequest
+    export type CreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Create Security Pipeline Run
+ */
+export const useCreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>, TError,{runId: string;data: CreateSecurityPipelineRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPost>>,
+        TError,
+        {runId: string;data: CreateSecurityPipelineRequest},
+        TContext
+      > => {
+      return useMutation(getCreateSecurityPipelineRunApiPipelinesRunsRunIdSecurityRunsPostMutationOptions(options));
+    }
+
+/**
+ * @summary Copy Security Pipeline Credentials
+ */
+export const copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost = (
+    runId: string,
+    copySecurityCredentialsRequest: CopySecurityCredentialsRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<CopyPipelineDeliveriesResponse>(
+      {url: `/api/pipelines/runs/${runId}/security-credentials/copy`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: copySecurityCredentialsRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getCopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>, TError,{runId: string;data: CopySecurityCredentialsRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>, TError,{runId: string;data: CopySecurityCredentialsRequest}, TContext> => {
+
+const mutationKey = ['copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>, {runId: string;data: CopySecurityCredentialsRequest}> = (props) => {
+          const {runId,data} = props ?? {};
+
+          return  copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost(runId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPostMutationResult = NonNullable<Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>>
+    export type CopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPostMutationBody = CopySecurityCredentialsRequest
+    export type CopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Copy Security Pipeline Credentials
+ */
+export const useCopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>, TError,{runId: string;data: CopySecurityCredentialsRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof copySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPost>>,
+        TError,
+        {runId: string;data: CopySecurityCredentialsRequest},
+        TContext
+      > => {
+      return useMutation(getCopySecurityPipelineCredentialsApiPipelinesRunsRunIdSecurityCredentialsCopyPostMutationOptions(options));
+    }
+
+/**
  * @summary List Pipeline Deliveries
  */
 export const listPipelineDeliveriesApiPipelinesRunsRunIdDeliveriesGet = (
@@ -2901,6 +3572,72 @@ export const useCopyPipelineDeliveriesApiPipelinesRunsRunIdDeliveriesCopyPost = 
         TContext
       > => {
       return useMutation(getCopyPipelineDeliveriesApiPipelinesRunsRunIdDeliveriesCopyPostMutationOptions(options));
+    }
+
+/**
+ * @summary Confirm Pipeline Delivery Copies
+ */
+export const confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost = (
+    runId: string,
+    confirmPipelineDeliveryCopiesRequest: ConfirmPipelineDeliveryCopiesRequest,
+ options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
+) => {
+
+
+      return orvalRequest<ConfirmPipelineDeliveryCopiesResponse>(
+      {url: `/api/pipelines/runs/${runId}/deliveries/copy/confirm`, method: 'POST',
+      headers: {'Content-Type': 'application/json', },
+      data: confirmPipelineDeliveryCopiesRequest, signal
+    },
+      options);
+    }
+
+
+
+
+export const getConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>, TError,{runId: string;data: ConfirmPipelineDeliveryCopiesRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>, TError,{runId: string;data: ConfirmPipelineDeliveryCopiesRequest}, TContext> => {
+
+const mutationKey = ['confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>, {runId: string;data: ConfirmPipelineDeliveryCopiesRequest}> = (props) => {
+          const {runId,data} = props ?? {};
+
+          return  confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost(runId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPostMutationResult = NonNullable<Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>>
+    export type ConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPostMutationBody = ConfirmPipelineDeliveryCopiesRequest
+    export type ConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Confirm Pipeline Delivery Copies
+ */
+export const useConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>, TError,{runId: string;data: ConfirmPipelineDeliveryCopiesRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof confirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPost>>,
+        TError,
+        {runId: string;data: ConfirmPipelineDeliveryCopiesRequest},
+        TContext
+      > => {
+      return useMutation(getConfirmPipelineDeliveryCopiesApiPipelinesRunsRunIdDeliveriesCopyConfirmPostMutationOptions(options));
     }
 
 /**
@@ -3767,9 +4504,9 @@ export const usePublishResultsApiResultsPublishPost = <TError = HTTPValidationEr
     }
 
 /**
- * @summary Check Plus
+ * @summary Check Plus Results
  */
-export const checkPlusApiResultsCheckPlusPost = (
+export const checkPlusResultsApiResultsCheckPlusPost = (
     plusCheckRequest: PlusCheckRequest,
  options?: SecondParameter<typeof orvalRequest>,signal?: AbortSignal
 ) => {
@@ -3786,11 +4523,11 @@ export const checkPlusApiResultsCheckPlusPost = (
 
 
 
-export const getCheckPlusApiResultsCheckPlusPostMutationOptions = <TError = HTTPValidationError,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
-): UseMutationOptions<Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext> => {
+export const getCheckPlusResultsApiResultsCheckPlusPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+): UseMutationOptions<Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext> => {
 
-const mutationKey = ['checkPlusApiResultsCheckPlusPost'];
+const mutationKey = ['checkPlusResultsApiResultsCheckPlusPost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -3800,10 +4537,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>, {data: PlusCheckRequest}> = (props) => {
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>, {data: PlusCheckRequest}> = (props) => {
           const {data} = props ?? {};
 
-          return  checkPlusApiResultsCheckPlusPost(data,requestOptions)
+          return  checkPlusResultsApiResultsCheckPlusPost(data,requestOptions)
         }
 
 
@@ -3813,22 +4550,22 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type CheckPlusApiResultsCheckPlusPostMutationResult = NonNullable<Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>>
-    export type CheckPlusApiResultsCheckPlusPostMutationBody = PlusCheckRequest
-    export type CheckPlusApiResultsCheckPlusPostMutationError = HTTPValidationError
+    export type CheckPlusResultsApiResultsCheckPlusPostMutationResult = NonNullable<Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>>
+    export type CheckPlusResultsApiResultsCheckPlusPostMutationBody = PlusCheckRequest
+    export type CheckPlusResultsApiResultsCheckPlusPostMutationError = HTTPValidationError
 
     /**
- * @summary Check Plus
+ * @summary Check Plus Results
  */
-export const useCheckPlusApiResultsCheckPlusPost = <TError = HTTPValidationError,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
+export const useCheckPlusResultsApiResultsCheckPlusPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>, TError,{data: PlusCheckRequest}, TContext>, request?: SecondParameter<typeof orvalRequest>}
  ): UseMutationResult<
-        Awaited<ReturnType<typeof checkPlusApiResultsCheckPlusPost>>,
+        Awaited<ReturnType<typeof checkPlusResultsApiResultsCheckPlusPost>>,
         TError,
         {data: PlusCheckRequest},
         TContext
       > => {
-      return useMutation(getCheckPlusApiResultsCheckPlusPostMutationOptions(options));
+      return useMutation(getCheckPlusResultsApiResultsCheckPlusPostMutationOptions(options));
     }
 
 /**
