@@ -1,105 +1,54 @@
-import { Link } from "react-router"
-import { ArrowRight } from "lucide-react"
-
-import { useGetDashboardApiDashboardGet } from "@/api/generated"
-
-type Metric = {
-  label: string
-  value: number
-}
-
-function MetricGroup({
-  title,
-  href,
-  metrics,
-}: {
-  title: string
-  href: string
-  metrics: Metric[]
-}) {
-  return (
-    <section className="border-t" aria-label={title}>
-      <div className="flex items-center justify-between py-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <Link
-          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          to={href}
-        >
-          查看
-          <ArrowRight className="size-3.5" />
-        </Link>
-      </div>
-      <div className="grid grid-cols-2 border-y bg-muted/20 sm:grid-cols-4">
-        {metrics.map((metric, index) => (
-          <div
-            className={`px-4 py-5 ${index ? "border-l" : ""}`}
-            key={metric.label}
-          >
-            <div className="text-xs text-muted-foreground">{metric.label}</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">
-              {metric.value}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  )
-}
+import {
+  useGetDashboardApiDashboardGet,
+  useListPipelineRunsApiPipelinesRunsGet,
+} from "@/api/generated"
+import { TableRefreshButton } from "@/components/table-refresh-button"
+import { DashboardResources } from "@/features/dashboard/components/dashboard-resources"
+import { DashboardStatusStrip } from "@/features/dashboard/components/dashboard-status-strip"
+import { RecentPipelines } from "@/features/dashboard/components/recent-pipelines"
+import { DASHBOARD_RECENT_PIPELINES_PARAMS } from "@/features/dashboard/lib/dashboard-queries"
 
 export function DashboardPage() {
   const dashboard = useGetDashboardApiDashboardGet()
+  const recent = useListPipelineRunsApiPipelinesRunsGet(
+    DASHBOARD_RECENT_PIPELINES_PARAMS
+  )
   const data = dashboard.data
+  const refreshing = dashboard.isFetching || recent.isFetching
+  const refresh = () => {
+    void dashboard.refetch()
+    void recent.refetch()
+  }
+
+  if (!data) return null
 
   return (
     <div className="h-full min-h-0 overflow-auto">
-      <div className="flex min-h-full flex-col gap-6">
-        <h1 className="text-xl font-semibold">工作台</h1>
+      <div className="mx-auto flex min-h-full w-full max-w-360 flex-col gap-6 pb-2">
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold">工作台</h1>
+            <p className="mt-1 text-xs text-muted-foreground">
+              本地资源与流水线运行概览
+            </p>
+          </div>
+          <TableRefreshButton
+            isRefreshing={refreshing}
+            label="刷新工作台"
+            onRefresh={refresh}
+          />
+        </header>
 
-        <MetricGroup
-          href="/accounts"
-          title="邮箱号池"
-          metrics={[
-            { label: "账号总数", value: data?.accounts.total ?? 0 },
-            { label: "可用", value: data?.accounts.available ?? 0 },
-            { label: "使用中", value: data?.accounts.in_use ?? 0 },
-            {
-              label: "完成 / 失败",
-              value: (data?.accounts.done ?? 0) + (data?.accounts.failed ?? 0),
-            },
-          ]}
-        />
+        <DashboardStatusStrip data={data} />
 
-        <MetricGroup
-          href="/cards"
-          title="卡密库存"
-          metrics={[
-            { label: "卡密总数", value: data?.cards.total ?? 0 },
-            { label: "已启用", value: data?.cards.active ?? 0 },
-            { label: "已停用", value: data?.cards.inactive ?? 0 },
-          ]}
-        />
-
-        <MetricGroup
-          href="/pipelines"
-          title="流水线与任务"
-          metrics={[
-            { label: "轮次总数", value: data?.pipelines.total ?? 0 },
-            { label: "活动轮次", value: data?.pipelines.active ?? 0 },
-            { label: "排队任务", value: data?.jobs.queued ?? 0 },
-            { label: "运行任务", value: data?.jobs.running ?? 0 },
-          ]}
-        />
-
-        <MetricGroup
-          href="/results"
-          title="注册结果"
-          metrics={[
-            { label: "结果总数", value: data?.registration_results ?? 0 },
-            { label: "已完成轮次", value: data?.pipelines.completed ?? 0 },
-            { label: "失败轮次", value: data?.pipelines.failed ?? 0 },
-            { label: "失败任务", value: data?.jobs.failed ?? 0 },
-          ]}
-        />
+        <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]">
+          <RecentPipelines
+            error={recent.isError}
+            loading={recent.isLoading}
+            runs={recent.data?.items ?? []}
+          />
+          <DashboardResources data={data} />
+        </div>
       </div>
     </div>
   )
