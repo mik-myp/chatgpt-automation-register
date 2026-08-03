@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
+from gpt_auto_register.core.config import Settings
 from gpt_auto_register.core.encryption import MasterKeyError, decrypt_text, encrypt_text
 from gpt_auto_register.core.local_access import origin_matches_request_host
 from gpt_auto_register.core.security import token_hash
@@ -157,3 +158,8 @@ def test_production_origin_validation_uses_request_host() -> None:
     )
     assert not origin_matches_request_host(request_with_origin("https://evil.example.com"))
     assert not origin_matches_request_host(request_with_origin("null"))
+
+
+def test_production_cookie_is_not_forced_secure() -> None:
+    settings = Settings(environment="production", database_url="sqlite+pysqlite:///:memory:")
+    assert not settings.session_cookie_secure

@@ -43,9 +43,9 @@ docker compose -f compose.sqlite.yaml logs api
 Compose 固定使用 `mikmyp/chatgpt-automation-register:latest`，并将 API 绑定到
 `127.0.0.1:8000`。PostgreSQL 初始密码为 `123456`；正式部署前应同时修改
 `compose.yaml` 中数据库服务的密码和应用数据库 URL。首版生产部署只支持同源访问，
-Session Cookie 自动启用 Secure；公网访问必须由 Caddy、Nginx、Traefik 或服务器面板终止
-HTTPS。PostgreSQL 与 SQLite 是独立部署，不提供跨库复制；切换到 PostgreSQL 会创建全新
-数据库。
+不限制访问使用的 IP、域名或 HTTP/HTTPS 协议。公网部署仍建议由 Caddy、Nginx、Traefik
+或服务器面板终止 HTTPS。PostgreSQL 与 SQLite 是独立部署，不提供跨库复制；切换到
+PostgreSQL 会创建全新数据库。
 
 镜像包含四个入口：
 
