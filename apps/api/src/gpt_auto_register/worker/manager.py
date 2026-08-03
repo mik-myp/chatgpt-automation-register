@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import fcntl
 import os
 import threading
 import time
 from contextlib import suppress
 from datetime import timedelta
 from typing import Any, TextIO
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from sqlalchemy import or_, select, update
 
@@ -58,8 +62,17 @@ class WorkerManager:
         lock_file = lock_path.open("a+", encoding="utf-8")
         lock_path.chmod(0o600)
         try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == "nt":
+                lock_file.seek(0)
+                if not lock_file.read(1):
+                    lock_file.seek(0)
+                    lock_file.write("\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             lock_file.close()
             return False
         lock_file.seek(0)
@@ -73,7 +86,11 @@ class WorkerManager:
         if self._lock_file is None:
             return
         with suppress(OSError):
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                self._lock_file.seek(0)
+                msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
         self._lock_file.close()
         self._lock_file = None
 
