@@ -30,13 +30,14 @@ def create_app(
     )
     application.state.session_factory = SessionLocal
     application.add_middleware(TrustedAccessMiddleware)
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=sorted(settings.trusted_origin_set),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["Accept", "Content-Type", "X-CSRF-Token", "X-Reauth-Password"],
-    )
+    if settings.environment != "production":
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=sorted(settings.trusted_origin_set),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["Accept", "Content-Type", "X-CSRF-Token", "X-Reauth-Password"],
+        )
     application.include_router(api_router, prefix="/api")
     if settings.frontend_dist_path.is_dir():
         assets_path = settings.frontend_dist_path / "assets"

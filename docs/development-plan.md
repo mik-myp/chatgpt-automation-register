@@ -150,7 +150,10 @@ POST /api/auth/change-password
 - `compose.sqlite.yaml` 使用共享数据卷运行迁移、API 和单 Worker。
 - Worker 在初始化完成前只等待，不领取业务任务。
 - PostgreSQL、API 均配置健康检查、启动依赖、优雅退出和持久卷。
-- `.env.example` 不包含默认密码，并说明数据库密码、可信 Origin、Cookie Secure 和主密钥文件配置。
+- 首版 Compose 零配置启动：固定使用 `latest` 镜像和本机 `8000` 端口，PostgreSQL 初始
+  密码为 `123456`，高级用户直接编辑 Compose。
+- 首版不开放可信 Origin、可信 Host、Cookie Secure 和代理地址环境变量；生产环境固定
+  同源访问并自动启用 Secure Cookie。
 - GitHub Actions 在 `v*` 标签发布镜像。
 - 发布 `v1.2.3` 时生成 `1.2.3`、`1.2`、`1` 和 `latest` 标签。
 - 发布工作流生成 SBOM 和构建证明，主分支构建不覆盖正式版本标签。
@@ -177,4 +180,3 @@ POST /api/auth/change-password
 - 不内置公网 HTTPS 终止服务。
 - 不提供完整多用户管理界面。
 - 不允许生产环境关闭认证。
-

@@ -6,8 +6,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 from gpt_auto_register.core.encryption import MasterKeyError, decrypt_text, encrypt_text
+from gpt_auto_register.core.local_access import origin_matches_request_host
 from gpt_auto_register.core.security import token_hash
 from gpt_auto_register.db.base import Base, utc_now
 from gpt_auto_register.db.models.auth import SetupState, UserSession
@@ -16,6 +18,25 @@ from gpt_auto_register.main import create_app
 
 ORIGIN = "http://localhost:5173"
 SETUP_TOKEN = "s" * 48
+
+
+def request_with_origin(origin: str, host: str = "register.example.com") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/auth/login",
+            "raw_path": b"/api/auth/login",
+            "query_string": b"",
+            "headers": [
+                (b"host", host.encode()),
+                (b"origin", origin.encode()),
+            ],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 8000),
+        }
+    )
 
 
 @pytest.fixture
@@ -127,3 +148,12 @@ def test_encryption_rejects_tampered_ciphertext() -> None:
     with pytest.raises(MasterKeyError):
         decrypt_text(ciphertext[:-2] + "aa")
     assert token_hash("session-value") != "session-value"
+
+
+def test_production_origin_validation_uses_request_host() -> None:
+    assert origin_matches_request_host(request_with_origin("https://register.example.com"))
+    assert origin_matches_request_host(
+        request_with_origin("http://127.0.0.1:8000", "127.0.0.1:8000")
+    )
+    assert not origin_matches_request_host(request_with_origin("https://evil.example.com"))
+    assert not origin_matches_request_host(request_with_origin("null"))

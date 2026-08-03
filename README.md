@@ -26,8 +26,7 @@ API 和 Worker 是独立进程。`pnpm dev` 会同时启动前端、API 和单 W
 
 ## Docker 部署
 
-复制根目录的 `.env.example` 为 `.env`，填写数据库密码、公开 HTTPS Origin 和 Host。
-默认部署使用 PostgreSQL：
+默认部署使用 PostgreSQL，无需创建 `.env`：
 
 ```bash
 docker compose up -d
@@ -41,9 +40,12 @@ docker compose -f compose.sqlite.yaml up -d
 docker compose -f compose.sqlite.yaml logs api
 ```
 
-Compose 端口默认仅绑定 `127.0.0.1`。公网访问应由 Caddy、Nginx、Traefik 或服务器面板
-终止 HTTPS，并保持 `COOKIE_SECURE=true`。PostgreSQL 与 SQLite 是独立部署，不提供跨库
-复制；切换到 PostgreSQL 会创建全新数据库。
+Compose 固定使用 `mikmyp/chatgpt-automation-register:latest`，并将 API 绑定到
+`127.0.0.1:8000`。PostgreSQL 初始密码为 `123456`；正式部署前应同时修改
+`compose.yaml` 中数据库服务的密码和应用数据库 URL。首版生产部署只支持同源访问，
+Session Cookie 自动启用 Secure；公网访问必须由 Caddy、Nginx、Traefik 或服务器面板终止
+HTTPS。PostgreSQL 与 SQLite 是独立部署，不提供跨库复制；切换到 PostgreSQL 会创建全新
+数据库。
 
 镜像包含四个入口：
 

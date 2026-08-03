@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.core.config import get_settings
+from gpt_auto_register.core.local_access import origin_matches_request_host
 from gpt_auto_register.core.security import token_hash, tokens_equal, verify_password
 from gpt_auto_register.db.models.auth import SetupState
 from gpt_auto_register.infrastructure.authentication import (
@@ -22,7 +23,12 @@ def validate_origin(request: Request) -> None:
     if not settings.authentication_enabled:
         return
     origin = request.headers.get("origin", "").rstrip("/")
-    if not origin or origin not in settings.trusted_origin_set:
+    origin_is_valid = (
+        origin_matches_request_host(request)
+        if settings.environment == "production"
+        else origin in settings.trusted_origin_set
+    )
+    if not origin or not origin_is_valid:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "请求来源不受信任")
 
 

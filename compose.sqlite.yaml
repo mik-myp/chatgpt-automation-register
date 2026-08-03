@@ -1,16 +1,12 @@
 name: gpt-auto-register-sqlite
 
 x-app: &app
-  image: ${GPT_AUTO_IMAGE:-mikmyp/chatgpt-automation-register:latest}
+  image: mikmyp/chatgpt-automation-register:latest
   restart: unless-stopped
   environment:
     GPT_AUTO_ENVIRONMENT: production
     GPT_AUTO_DATABASE_URL: sqlite+pysqlite:////app/data/gpt-auto-register.db
     GPT_AUTO_HOST: 0.0.0.0
-    GPT_AUTO_COOKIE_SECURE: ${COOKIE_SECURE:?set COOKIE_SECURE to true behind HTTPS}
-    GPT_AUTO_TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:?set TRUSTED_ORIGINS}
-    GPT_AUTO_TRUSTED_HOSTS: ${TRUSTED_HOSTS:?set TRUSTED_HOSTS}
-    GPT_AUTO_FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
   volumes:
     - app-data:/app/data
 
@@ -24,7 +20,7 @@ services:
     <<: *app
     command: ["gpt-auto-api"]
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully

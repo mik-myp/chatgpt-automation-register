@@ -50,9 +50,11 @@ class Settings(BaseSettings):
             )
         if self.environment == "production" and not self.authentication_enabled:
             raise ValueError("authentication cannot be disabled in production")
-        if self.environment == "production" and not self.cookie_secure:
-            raise ValueError("GPT_AUTO_COOKIE_SECURE must be true in production")
         return self
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        return self.environment == "production" or self.cookie_secure
 
     @property
     def database_dialect(self) -> Literal["sqlite", "postgresql"]:
