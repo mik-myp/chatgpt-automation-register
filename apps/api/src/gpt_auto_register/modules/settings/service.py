@@ -2,6 +2,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.core.encryption import protect_setting, reveal_setting
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.settings.schemas import (
     DeliveryCopySettings,
@@ -113,14 +114,19 @@ class SettingsService:
 
     def _value(self, key: str, default: dict[str, Any]) -> dict[str, Any]:
         row = self.session.get(AppSetting, key)
-        return dict(row.value) if row and isinstance(row.value, dict) else default
+        if row is None:
+            return default
+        if row.sensitive:
+            return reveal_setting(row.value)
+        return dict(row.value) if isinstance(row.value, dict) else default
 
     def _set(self, key: str, value: dict[str, Any], *, sensitive: bool = False) -> None:
         row = self.session.get(AppSetting, key)
         if row is None:
-            self.session.add(AppSetting(key=key, value=value, sensitive=sensitive))
+            stored = protect_setting(value) if sensitive else value
+            self.session.add(AppSetting(key=key, value=stored, sensitive=sensitive))
         else:
-            row.value = value
+            row.value = protect_setting(value) if sensitive else value
             row.sensitive = sensitive
 
     @staticmethod

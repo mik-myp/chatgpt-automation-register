@@ -4,12 +4,12 @@ from enum import StrEnum
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from gpt_auto_register.core.encryption import EncryptedJSON, EncryptedText
 from gpt_auto_register.db.base import Base
 from gpt_auto_register.db.models.common import (
     JsonObject,
     TimestampMixin,
     enum_type,
-    json_object_column,
     new_id,
 )
 
@@ -61,7 +61,9 @@ class PipelineRun(TimestampMixin, Base):
     mode: Mapped[str] = mapped_column(String(32), default="current", nullable=False)
     target_count: Mapped[int] = mapped_column(Integer, nullable=False)
     kakao_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    config_snapshot: Mapped[JsonObject] = json_object_column()
+    config_snapshot: Mapped[JsonObject] = mapped_column(
+        EncryptedJSON(), default=dict, nullable=False
+    )
     scheduled_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     registered_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -86,7 +88,7 @@ class PipelineItem(TimestampMixin, Base):
     registration_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("registration_runs.id", ondelete="SET NULL"), index=True
     )
-    card_code_snapshot: Mapped[str | None] = mapped_column(Text)
+    card_code_snapshot: Mapped[str | None] = mapped_column(EncryptedText())
     status: Mapped[PipelineItemStatus] = mapped_column(
         enum_type(PipelineItemStatus, "pipeline_item_status"),
         default=PipelineItemStatus.SCHEDULED,

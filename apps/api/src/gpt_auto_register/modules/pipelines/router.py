@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
-from gpt_auto_register.api.dependencies import DatabaseSession
+from gpt_auto_register.api.dependencies import DatabaseSession, DatabaseSessionFactory
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
 from gpt_auto_register.db.models.jobs import Job, JobEvent, JobStatus
@@ -18,7 +18,6 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineRunKind,
     PipelineStatus,
 )
-from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
 from gpt_auto_register.modules.cards.allocator import (
     CardAllocationError,
@@ -518,9 +517,10 @@ def list_pipeline_events(
 def stream_pipeline_events(
     run_id: str,
     request: Request,
+    session_factory: DatabaseSessionFactory,
     cursor: Annotated[int, Query(ge=0)] = 0,
 ) -> StreamingResponse:
-    with SessionLocal() as session:
+    with session_factory() as session:
         if PipelineRepository(session).get(run_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "流水线轮次不存在")
 
@@ -528,7 +528,7 @@ def stream_pipeline_events(
         event_cursor = cursor
         idle_ticks = 0
         while not await request.is_disconnected():
-            with SessionLocal() as session:
+            with session_factory() as session:
                 repository = PipelineRepository(session)
                 run = repository.get(run_id)
                 if run is None:

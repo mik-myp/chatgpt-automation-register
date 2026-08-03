@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Header, HTTPException, Response, status
 from sqlalchemy import select
 
+from gpt_auto_register.api.auth_dependencies import CurrentSession, require_reauthentication
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.core.config import get_settings as get_app_settings
 from gpt_auto_register.db.base import utc_now
@@ -41,7 +42,12 @@ def update_settings(request: SystemSettingsUpdate, db: DatabaseSession) -> Syste
 
 
 @router.get("/data/export", response_model=BackupBundle)
-def export_data(db: DatabaseSession) -> BackupBundle:
+def export_data(
+    db: DatabaseSession,
+    authenticated: CurrentSession,
+    reauth_password: str = Header(default="", alias="X-Reauth-Password"),
+) -> BackupBundle:
+    require_reauthentication(authenticated, reauth_password)
     return export_bundle(db)
 
 
@@ -54,7 +60,13 @@ def preview_data(request: BackupPreviewRequest, db: DatabaseSession) -> BackupPr
 
 
 @router.post("/data/import", response_model=BackupImportResponse)
-def import_data(request: BackupImportRequest, db: DatabaseSession) -> BackupImportResponse:
+def import_data(
+    request: BackupImportRequest,
+    db: DatabaseSession,
+    authenticated: CurrentSession,
+    reauth_password: str = Header(default="", alias="X-Reauth-Password"),
+) -> BackupImportResponse:
+    require_reauthentication(authenticated, reauth_password)
     try:
         return import_bundle(db, request, recovery_directory=get_app_settings().backup_path)
     except ValueError as error:

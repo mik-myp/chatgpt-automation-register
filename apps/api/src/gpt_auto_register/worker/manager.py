@@ -12,10 +12,12 @@ if os.name == "nt":
 else:
     import fcntl
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import Connection, Engine, or_, select, text, update
+from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.core.config import get_settings
 from gpt_auto_register.db.base import utc_now
+from gpt_auto_register.db.models.auth import SetupState
 from gpt_auto_register.db.models.jobs import Job, JobStatus
 from gpt_auto_register.db.models.kakao import (
     KakaoTask,
@@ -26,7 +28,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineStatus,
 )
 from gpt_auto_register.db.result import affected_rows
-from gpt_auto_register.db.session import SessionLocal
+from gpt_auto_register.db.session import SessionLocal, engine
 from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
 from gpt_auto_register.modules.kakao.state import (
     apply_upstream,
@@ -46,7 +48,13 @@ from gpt_auto_register.worker.runtime_gateway import RuntimeCanceledError
 
 
 class WorkerManager:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session] | None = None,
+        database_engine: Engine | None = None,
+    ) -> None:
+        self._session_factory_override = session_factory
+        self._database_engine = database_engine or engine
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._active_cancel_event: threading.Event | None = None
@@ -54,10 +62,28 @@ class WorkerManager:
         self._next_kakao_sync = 0.0
         self._next_maintenance = 0.0
         self._lock_file: TextIO | None = None
+        self._lock_connection: Connection | None = None
+
+    @property
+    def _session_factory(self) -> sessionmaker[Session]:
+        return self._session_factory_override or SessionLocal
 
     def _acquire_singleton_lock(self) -> bool:
         settings = get_settings()
         settings.ensure_runtime_directories()
+        if getattr(settings, "database_dialect", "sqlite") == "postgresql":
+            connection = self._database_engine.connect()
+            acquired = bool(
+                connection.scalar(
+                    text("SELECT pg_try_advisory_lock(:lock_id)"),
+                    {"lock_id": 7_043_821_991},
+                )
+            )
+            if not acquired:
+                connection.close()
+                return False
+            self._lock_connection = connection
+            return True
         lock_path = settings.runtime_data_path.parent / "worker.lock"
         lock_file = lock_path.open("a+", encoding="utf-8")
         lock_path.chmod(0o600)
@@ -69,7 +95,7 @@ class WorkerManager:
                     lock_file.write("\0")
                     lock_file.flush()
                 lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -83,12 +109,24 @@ class WorkerManager:
         return True
 
     def _release_singleton_lock(self) -> None:
+        if self._lock_connection is not None:
+            with suppress(Exception):
+                self._lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": 7_043_821_991},
+                )
+            self._lock_connection.close()
+            self._lock_connection = None
+            return
         if self._lock_file is None:
             return
         with suppress(OSError):
             if os.name == "nt":
                 self._lock_file.seek(0)
-                msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                unlock_mode = msvcrt.LK_UNLCK  # type: ignore[attr-defined]
+                msvcrt.locking(  # type: ignore[attr-defined]
+                    self._lock_file.fileno(), unlock_mode, 1
+                )
             else:
                 fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
         self._lock_file.close()
@@ -98,7 +136,7 @@ class WorkerManager:
         if self._thread and self._thread.is_alive():
             return
         if not self._acquire_singleton_lock():
-            raise RuntimeError("本地数据库已由另一个 API 进程使用，请只启动一个 API Worker")
+            raise RuntimeError("已有 Worker 正在运行，首版部署只允许一个 Worker")
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop,
@@ -121,9 +159,12 @@ class WorkerManager:
             self._thread = None
         self._release_singleton_lock()
 
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     def _claim(self) -> Job | None:
         now = utc_now()
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             candidate = (
                 select(Job.id)
                 .where(
@@ -169,7 +210,7 @@ class WorkerManager:
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> JobStatus:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             ownership = (
                 Job.id == job_id,
                 Job.status == JobStatus.RUNNING,
@@ -218,7 +259,7 @@ class WorkerManager:
             return final_status
 
     def _interrupt(self, job_id: str) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             job = session.get(Job, job_id)
             if job is None or job.status != JobStatus.RUNNING or job.lease_owner != self.worker_id:
                 return
@@ -236,7 +277,7 @@ class WorkerManager:
 
     def _heartbeat(self, job_id: str, stopped: threading.Event) -> None:
         while not stopped.wait(30):
-            with SessionLocal() as session:
+            with self._session_factory() as session:
                 job = session.get(Job, job_id)
                 if (
                     job is None
@@ -249,7 +290,7 @@ class WorkerManager:
 
     @synchronized_kakao_state
     def _sync_kakao_tasks(self) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             settings = SettingsService(session).kakao_internal()
             if not settings.base_url:
                 return
@@ -286,6 +327,12 @@ class WorkerManager:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if get_settings().authentication_enabled:
+                with self._session_factory() as session:
+                    setup = session.get(SetupState, 1)
+                    if setup is None or not setup.initialized:
+                        self._stop.wait(1)
+                        continue
             now = time.monotonic()
             if now >= self._next_kakao_sync:
                 self._next_kakao_sync = now + 5
@@ -293,7 +340,7 @@ class WorkerManager:
                     self._sync_kakao_tasks()
             if now >= self._next_maintenance:
                 self._next_maintenance = now + 3600
-                with suppress(Exception), SessionLocal() as session:
+                with suppress(Exception), self._session_factory() as session:
                     settings = get_settings()
                     maintenance = SettingsService(session).maintenance_internal()
                     cleanup_storage(
@@ -316,9 +363,9 @@ class WorkerManager:
             try:
                 run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
                 cancellation_monitor = (
-                    monitor_run_cancellation(run_id, SessionLocal)
+                    monitor_run_cancellation(run_id, self._session_factory)
                     if run_id
-                    else monitor_job_cancellation(job.id, SessionLocal)
+                    else monitor_job_cancellation(job.id, self._session_factory)
                 )
                 with cancellation_monitor as cancel_event:
                     self._active_cancel_event = cancel_event
@@ -327,6 +374,7 @@ class WorkerManager:
                             job.id,
                             job.payload,
                             cancel_event,
+                            self._session_factory,
                         ).execute()
                         self._finish(job.id, result=result)
                         continue
@@ -335,6 +383,7 @@ class WorkerManager:
                             job.id,
                             job.payload,
                             cancel_event,
+                            self._session_factory,
                         ).execute()
                         failed = int(result.get("failed") or 0)
                         self._finish(
@@ -354,6 +403,7 @@ class WorkerManager:
                         run_id,
                         item_ids,
                         cancel_event,
+                        self._session_factory,
                     ).execute()
                     self._finish(job.id, result=result)
             except RuntimeCanceledError:
@@ -363,7 +413,7 @@ class WorkerManager:
                 _emit(job.id, "job_failed", str(error), level="error")
                 final_status = self._finish(job.id, error=str(error))
                 if final_status == JobStatus.FAILED:
-                    with SessionLocal() as session:
+                    with self._session_factory() as session:
                         run_id = str(
                             job.pipeline_run_id or job.payload.get("pipeline_run_id") or ""
                         )

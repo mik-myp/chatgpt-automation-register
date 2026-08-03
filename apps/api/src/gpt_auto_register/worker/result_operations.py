@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
@@ -49,10 +50,12 @@ class ResultOperationExecutor:
         job_id: str,
         payload: dict[str, Any],
         cancel_event: threading.Event,
+        session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         self.job_id = job_id
         self.payload = payload
         self.cancel_event = cancel_event
+        self._session_factory = session_factory or SessionLocal
 
     def execute(self) -> dict[str, Any]:
         emails = self._resolve_emails()
@@ -68,7 +71,7 @@ class ResultOperationExecutor:
             for email in self.payload.get("emails", [])
             if str(email).strip()
         ]
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             query = select(Credential.email).distinct().order_by(Credential.created_at.desc())
             pipeline_run_id = str(self.payload.get("pipeline_run_id") or "")
             if pipeline_run_id:
@@ -110,7 +113,7 @@ class ResultOperationExecutor:
         return self._plus_result(emails, results)
 
     def _check_one(self, email: str, proxy: str) -> dict[str, object]:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 return {
@@ -160,7 +163,7 @@ class ResultOperationExecutor:
     def _refresh_authorization(self, email: str, proxy: str, mode: str) -> str:
         if self.cancel_event.is_set():
             raise RuntimeCanceledError("Plus 检查已取消")
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             account = session.get(OutlookAccount, email)
             if credential is None:
@@ -181,7 +184,7 @@ class ResultOperationExecutor:
                 "mail": settings.mail_internal(),
             }
         response = call_legacy_runtime(
-            SessionLocal,
+            self._session_factory,
             payload,
             timeout=600 if mode == "login" else 120,
             job_id=self.job_id,
@@ -190,7 +193,7 @@ class ResultOperationExecutor:
         if not response.get("ok"):
             raise RuntimeError(str(response.get("error") or "授权恢复失败"))
         value = dict(response.get("credential") or {})
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 raise RuntimeError("凭据不存在")
@@ -210,7 +213,7 @@ class ResultOperationExecutor:
             return credential.access_token
 
     def _save_plus_result(self, email: str, result: dict[str, object]) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 return
@@ -222,7 +225,7 @@ class ResultOperationExecutor:
 
     def _publish(self, emails: list[str]) -> dict[str, Any]:
         targets = [str(value) for value in self.payload.get("targets", [])]
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             export = SettingsService(session).export_internal()
         for name in ("cpa", "sub2api"):
             export[name]["enabled"] = name in targets
@@ -230,7 +233,7 @@ class ResultOperationExecutor:
         for email in emails:
             if self.cancel_event.is_set():
                 raise RuntimeCanceledError("发布任务已取消")
-            with SessionLocal() as session:
+            with self._session_factory() as session:
                 credential = session.get(Credential, email)
                 if credential is None:
                     continue
@@ -239,7 +242,7 @@ class ResultOperationExecutor:
                 )
             try:
                 response = call_legacy_runtime(
-                    SessionLocal,
+                    self._session_factory,
                     {"action": "export", "credential": detail, "export": export},
                     timeout=300,
                     job_id=self.job_id,
@@ -284,7 +287,7 @@ class ResultOperationExecutor:
         self._save_job_result(self._publish_result(emails, results))
 
     def _save_job_result(self, result: dict[str, Any]) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             job = session.get(Job, self.job_id)
             if job is not None and job.status == JobStatus.RUNNING:
                 job.result = result

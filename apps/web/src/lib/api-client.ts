@@ -42,16 +42,41 @@ function toApiError(error: AxiosError<unknown>) {
 
 export const apiClient = axios.create({
   baseURL: env.VITE_API_BASE_URL,
+  withCredentials: true,
   timeout: 30_000,
   headers: {
     Accept: "application/json",
   },
 })
 
+const CSRF_STORAGE_KEY = "gpt-auto-register:csrf-token"
+
+export function setCsrfToken(value: string) {
+  if (value) sessionStorage.setItem(CSRF_STORAGE_KEY, value)
+  else sessionStorage.removeItem(CSRF_STORAGE_KEY)
+}
+
+apiClient.interceptors.request.use((config) => {
+  const method = config.method?.toUpperCase() ?? "GET"
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const csrf = sessionStorage.getItem(CSRF_STORAGE_KEY)
+    if (csrf) config.headers.set("X-CSRF-Token", csrf)
+  }
+  return config
+})
+
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error: unknown) => {
     if (axios.isAxiosError(error)) {
+      if (
+        error.response?.status === 401 &&
+        !String(error.config?.url ?? "").includes("/auth/login")
+      ) {
+        setCsrfToken("")
+        if (window.location.pathname !== "/login")
+          window.location.assign("/login")
+      }
       return Promise.reject(toApiError(error))
     }
     return Promise.reject(error)

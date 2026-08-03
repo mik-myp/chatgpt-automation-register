@@ -1,9 +1,10 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column
 
+from gpt_auto_register.core.encryption import EncryptedText, secret_fingerprint
 from gpt_auto_register.db.base import Base
 from gpt_auto_register.db.models.common import (
     JsonObject,
@@ -44,7 +45,10 @@ class KakaoCard(TimestampMixin, Base):
     batch_id: Mapped[str] = mapped_column(
         ForeignKey("kakao_card_batches.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    code: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(EncryptedText(), nullable=False)
+    code_fingerprint: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -109,7 +113,7 @@ class KakaoTask(TimestampMixin, Base):
     card_id: Mapped[str | None] = mapped_column(
         ForeignKey("kakao_cards.id", ondelete="SET NULL"), index=True
     )
-    card_code_snapshot: Mapped[str | None] = mapped_column(Text)
+    card_code_snapshot: Mapped[str | None] = mapped_column(EncryptedText())
     email: Mapped[str] = mapped_column(String(320), index=True)
     status: Mapped[KakaoTaskStatus] = mapped_column(
         enum_type(KakaoTaskStatus, "kakao_task_status"), index=True, nullable=False
@@ -123,3 +127,9 @@ class KakaoTask(TimestampMixin, Base):
     payment_url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     upstream_payload: Mapped[JsonObject] = json_object_column()
+
+
+@event.listens_for(KakaoCard, "before_insert")
+@event.listens_for(KakaoCard, "before_update")
+def set_card_fingerprint(_mapper: object, _connection: object, target: KakaoCard) -> None:
+    target.code_fingerprint = secret_fingerprint(target.code)

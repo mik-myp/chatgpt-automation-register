@@ -5,6 +5,7 @@ import threading
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
@@ -38,12 +39,14 @@ class AccountSecurityExecutor:
         job_id: str,
         payload: dict[str, Any],
         cancel_event: threading.Event | None = None,
+        session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         self.job_id = job_id
         self.action = str(payload.get("action") or "")
         self.emails = [str(value).strip().lower() for value in payload.get("emails", [])]
         self.pipeline_run_id = str(payload.get("pipeline_run_id") or "")
         self._cancel_event = cancel_event or threading.Event()
+        self._session_factory = session_factory or SessionLocal
 
     def execute(self) -> dict[str, Any]:
         succeeded = failed = skipped = 0
@@ -86,7 +89,7 @@ class AccountSecurityExecutor:
         }
 
     def _save_progress(self, succeeded: int, failed: int, skipped: int) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             job = session.get(Job, self.job_id)
             if job is None or job.status != JobStatus.RUNNING:
                 return
@@ -101,14 +104,14 @@ class AccountSecurityExecutor:
     def _job_running(self) -> bool:
         if self._cancel_event.is_set():
             return False
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             job = session.get(Job, self.job_id)
             return job is not None and job.status == JobStatus.RUNNING
 
     def _start_pipeline(self) -> None:
         if not self.pipeline_run_id:
             return
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             run = session.get(PipelineRun, self.pipeline_run_id)
             if run is None or run.status == PipelineStatus.CANCELED:
                 return
@@ -119,7 +122,7 @@ class AccountSecurityExecutor:
     def _mark_item_running(self, email: str) -> None:
         if not self.pipeline_run_id:
             return
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.scalar(
                 select(PipelineItem).where(
                     PipelineItem.pipeline_run_id == self.pipeline_run_id,
@@ -135,7 +138,7 @@ class AccountSecurityExecutor:
     def _save_item_progress(self, email: str, error: str, *, skipped: bool) -> None:
         if not self.pipeline_run_id:
             return
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.scalar(
                 select(PipelineItem).where(
                     PipelineItem.pipeline_run_id == self.pipeline_run_id,
@@ -201,7 +204,7 @@ class AccountSecurityExecutor:
     def _finish_pipeline(self) -> None:
         if not self.pipeline_run_id:
             return
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             run = session.get(PipelineRun, self.pipeline_run_id)
             if run is None or run.status == PipelineStatus.CANCELED:
                 return
@@ -219,7 +222,7 @@ class AccountSecurityExecutor:
             self._execute_action(email, self.action)
             return True
 
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 raise RuntimeError("ChatGPT 凭据不存在")
@@ -281,7 +284,7 @@ class AccountSecurityExecutor:
             raise
 
     def _run_action(self, email: str, action: str) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             account = session.get(OutlookAccount, email)
             credential = session.get(Credential, email)
             if account is None or credential is None:
@@ -356,7 +359,7 @@ class AccountSecurityExecutor:
         if self._cancel_event.is_set():
             raise RuntimeCanceledError("协议运行已取消")
         value = dict(result.get("credential") or {})
-        self._persist_session(email, value)
+        self._persist_session(email, value, self._session_factory)
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or f"{operation_label}失败"))
         security = value.get("security") if isinstance(value.get("security"), dict) else {}
@@ -367,7 +370,7 @@ class AccountSecurityExecutor:
             raise RuntimeError(
                 str((outcome or {}).get("error") or f"{operation_label}未由服务端确认")
             )
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 raise RuntimeError("ChatGPT 凭据不存在")
@@ -407,7 +410,7 @@ class AccountSecurityExecutor:
         status_value: str,
         error: str,
     ) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 return
@@ -423,8 +426,13 @@ class AccountSecurityExecutor:
             session.commit()
 
     @staticmethod
-    def _persist_session(email: str, value: dict[str, Any]) -> None:
-        with SessionLocal() as session:
+    def _persist_session(
+        email: str,
+        value: dict[str, Any],
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
+        factory = session_factory or SessionLocal
+        with factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 return

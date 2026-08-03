@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "mkdir -p dist && .venv/bin/python -m compileall -q src && touch dist/.build-stamp",
-    "dev": ".venv/bin/alembic upgrade head && .venv/bin/uvicorn gpt_auto_register.main:app --reload --host 127.0.0.1 --port 8000",
+    "dev": ".venv/bin/alembic upgrade head && sh -c 'trap \"kill 0\" EXIT INT TERM; .venv/bin/gpt-auto-worker & .venv/bin/uvicorn gpt_auto_register.main:app --reload --host 127.0.0.1 --port 8000'",
     "format": ".venv/bin/ruff format src tests alembic",
     "lint": ".venv/bin/ruff check src tests alembic",
     "migrate": ".venv/bin/alembic upgrade head",

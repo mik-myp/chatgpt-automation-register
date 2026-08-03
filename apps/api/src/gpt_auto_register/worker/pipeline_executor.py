@@ -7,7 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session, sessionmaker
 
+from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
     AccountStatus,
@@ -54,6 +56,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         run_id: str,
         item_ids: list[str] | None = None,
         cancel_event: threading.Event | None = None,
+        session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         self.job_id = job_id
         self.run_id = run_id
@@ -61,10 +64,10 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         self._failure_lock = threading.Lock()
         self._consecutive_network_failures = 0
         self._cancel_event = cancel_event or threading.Event()
-        self._session_factory = SessionLocal
+        self._session_factory = session_factory or SessionLocal
 
     def execute(self) -> dict[str, Any]:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             run = session.get(PipelineRun, self.run_id)
             if run is None:
                 raise RuntimeError("流水线轮次不存在")
@@ -120,7 +123,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                         data={"item_id": futures[future]},
                     )
 
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             run = session.get(PipelineRun, self.run_id)
             if run is None:
                 raise RuntimeError("流水线轮次已被删除")
@@ -160,7 +163,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         return {"status": final_status, "registered": success, "failed": failed}
 
     def _allocate_cards(self, item_ids: list[str]) -> dict[str, str]:
-        with card_allocation_guard(), SessionLocal() as session:
+        with card_allocation_guard(), self._session_factory() as session:
             requested_items = list(
                 session.scalars(select(PipelineItem).where(PipelineItem.id.in_(item_ids)))
             )
@@ -203,7 +206,13 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             slots, _ = CardAllocator(session).select(len(item_ids))
             cards = {
                 card.code: card
-                for card in session.scalars(select(KakaoCard).where(KakaoCard.code.in_(set(slots))))
+                for card in session.scalars(
+                    select(KakaoCard).where(
+                        KakaoCard.code_fingerprint.in_(
+                            [secret_fingerprint(code) for code in set(slots)]
+                        )
+                    )
+                )
             }
             counts: dict[str, int] = {}
             mapping: dict[str, str] = {}
@@ -242,7 +251,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         while True:
             if self._cancel_event.is_set():
                 return False
-            with SessionLocal() as session:
+            with self._session_factory() as session:
                 run = session.get(PipelineRun, self.run_id)
                 if run is None or run.status == PipelineStatus.CANCELED:
                     return False
@@ -264,7 +273,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         resumed = self._resume_saved_registration(item_id, export, card_code)
         if resumed is not None:
             return resumed
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             run = session.get(PipelineRun, self.run_id)
             if item is None or run is None:
@@ -415,7 +424,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         export: dict[str, Any],
         card_code: str | None,
     ) -> bool | None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             if item is None:
                 return False
@@ -496,8 +505,10 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         return True
 
     def _record_kakao_failure(self, card_code: str) -> None:
-        with SessionLocal() as session:
-            card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
+        with self._session_factory() as session:
+            card = session.scalar(
+                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
+            )
             if card is None:
                 return
             allocation = session.get(PipelineCardAllocation, (self.run_id, card.id))
@@ -511,7 +522,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             failures = self._consecutive_network_failures
         if failures < 3:
             return
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             run = session.get(PipelineRun, self.run_id)
             if run is not None and run.status == PipelineStatus.RUNNING:
                 run.status = PipelineStatus.PAUSED
@@ -525,7 +536,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                 )
 
     def _mark_item_completed(self, item_id: str) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             session.execute(
                 update(PipelineItem)
                 .where(
@@ -542,7 +553,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             session.commit()
 
     def _save_post_registration_failure(self, item_id: str, message: str) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             session.execute(
                 update(PipelineItem)
                 .where(
@@ -567,7 +578,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         registration_run_id: str,
         value: dict[str, Any],
     ) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             registration_run = session.get(RegistrationRun, registration_run_id)
             run = session.get(PipelineRun, self.run_id)
@@ -619,7 +630,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         registration_run_id: str,
         email: str,
     ) -> None:
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             registration_run = session.get(RegistrationRun, registration_run_id)
             account = session.get(OutlookAccount, email)
@@ -646,7 +657,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             self._save_registration_canceled(item_id, registration_run_id, email)
             return
         category = _classify_error(message)
-        with SessionLocal() as session:
+        with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             registration_run = session.get(RegistrationRun, registration_run_id)
             account = session.get(OutlookAccount, email)

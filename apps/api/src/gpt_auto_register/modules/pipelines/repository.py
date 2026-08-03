@@ -3,6 +3,7 @@ from collections import Counter
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
     AccountStatus,
@@ -130,7 +131,11 @@ class PipelineRepository:
         counts = Counter(card_slots)
         cards = {
             card.code: card
-            for card in self.session.scalars(select(KakaoCard).where(KakaoCard.code.in_(counts)))
+            for card in self.session.scalars(
+                select(KakaoCard).where(
+                    KakaoCard.code_fingerprint.in_([secret_fingerprint(code) for code in counts])
+                )
+            )
         }
         self.session.add_all(
             PipelineCardAllocation(

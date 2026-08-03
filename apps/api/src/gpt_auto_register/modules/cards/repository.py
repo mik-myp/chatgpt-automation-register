@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 
-from sqlalchemy import delete, distinct, exists, func, select, update
+from sqlalchemy import delete, distinct, exists, false, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
@@ -40,8 +41,13 @@ class CardRepository:
         if active is not None:
             filters.append(KakaoCard.active.is_(active))
         if search:
-            needle = f"%{search.strip().lower()}%"
-            filters.append(func.lower(KakaoCard.code).like(needle))
+            needle = search.strip().lower()
+            matching_ids = [
+                card.id
+                for card in self.session.scalars(select(KakaoCard))
+                if needle in card.code.lower()
+            ]
+            filters.append(KakaoCard.id.in_(matching_ids) if matching_ids else false())
 
         total = (
             self.session.scalar(select(func.count()).select_from(KakaoCard).where(*filters)) or 0
@@ -114,11 +120,16 @@ class CardRepository:
         for start in range(0, len(codes), 500):
             existing.update(
                 self.session.scalars(
-                    select(KakaoCard.code).where(KakaoCard.code.in_(codes[start : start + 500]))
+                    select(KakaoCard.code_fingerprint).where(
+                        KakaoCard.code_fingerprint.in_(
+                            [secret_fingerprint(code) for code in codes[start : start + 500]]
+                        )
+                    )
                 )
             )
         for code in codes:
-            if code in existing:
+            fingerprint = secret_fingerprint(code)
+            if fingerprint in existing:
                 duplicates += 1
                 continue
             if batch is None:
@@ -129,7 +140,7 @@ class CardRepository:
             self.session.add(
                 KakaoCard(batch_id=batch.id, code=code, position=inserted, active=True)
             )
-            existing.add(code)
+            existing.add(fingerprint)
             inserted += 1
         self.session.flush()
         return (batch.id if batch else None), inserted, duplicates

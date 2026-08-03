@@ -90,7 +90,6 @@ def check_kakao_eligibility(
                 select(Credential.email)
                 .where(
                     Credential.access_token.is_not(None),
-                    Credential.access_token != "",
                 )
                 .order_by(Credential.created_at)
             )

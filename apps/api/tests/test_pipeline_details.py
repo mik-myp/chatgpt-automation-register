@@ -22,7 +22,6 @@ from gpt_auto_register.db.models.pipeline import (
 )
 from gpt_auto_register.db.models.settings import AppSetting
 from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
-from gpt_auto_register.modules.pipelines import router as pipeline_router
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
 
@@ -72,7 +71,6 @@ def test_pipeline_detail_includes_snapshot_and_items(
 def test_pipeline_event_stream_closes_after_terminal_event(
     client: TestClient,
     db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = PipelineRun(
         status=PipelineStatus.COMPLETED,
@@ -100,7 +98,7 @@ def test_pipeline_event_stream_closes_after_terminal_event(
     )
     db_session.commit()
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    monkeypatch.setattr(pipeline_router, "SessionLocal", factory)
+    client.app.state.session_factory = factory
 
     with client.stream(
         "GET",

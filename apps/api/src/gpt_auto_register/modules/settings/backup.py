@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.core.encryption import encrypt_text, protect_setting, reveal_setting
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import AccountStatus, Credential, OutlookAccount
 from gpt_auto_register.db.models.kakao import (
@@ -57,9 +58,12 @@ def _json_value(value: Any) -> Any:
 
 
 def _row_data(row: Any) -> dict[str, Any]:
-    return {
+    values = {
         column.key: _json_value(getattr(row, column.key)) for column in inspect(type(row)).columns
     }
+    if isinstance(row, AppSetting) and row.sensitive:
+        values["value"] = reveal_setting(row.value)
+    return values
 
 
 def _key(data: dict[str, Any], names: tuple[str, ...]) -> tuple[Any, ...]:
@@ -104,8 +108,8 @@ def _write_recovery_snapshot(session: Session, directory: Path) -> str | None:
     directory.mkdir(parents=True, exist_ok=True)
     bundle = export_bundle(session)
     stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
-    path = directory / f"recovery-{stamp}.json"
-    path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
+    path = directory / f"recovery-{stamp}.json.enc"
+    path.write_text(encrypt_text(bundle.model_dump_json()), encoding="utf-8")
     path.chmod(0o600)
     return path.name
 
@@ -166,6 +170,8 @@ def _coerce(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:
                 value = datetime.fromisoformat(value.replace("Z", "+00:00"))
             elif isinstance(python_type, type) and issubclass(python_type, Enum):
                 value = python_type(value)
+        if model is AppSetting and column.key == "value" and data.get("sensitive") is True:
+            value = protect_setting(value)
         values[column.key] = value
     return values
 

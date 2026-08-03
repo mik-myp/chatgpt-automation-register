@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, PipelineCardAllocation
@@ -200,7 +201,9 @@ class KakaoPipelineExecutorMixin:
                 )
                 return
             settings = SettingsService(session).kakao_internal()
-            card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
+            card = session.scalar(
+                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
+            )
             if card is None:
                 raise RuntimeError("已分配卡密不存在")
         client = KakaoClient(settings.base_url, settings.timeout)
@@ -296,7 +299,9 @@ class KakaoPipelineExecutorMixin:
         with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
             run = session.get(PipelineRun, self.run_id)
-            card = session.scalar(select(KakaoCard).where(KakaoCard.code == card_code))
+            card = session.scalar(
+                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
+            )
             if item is None or run is None or card is None:
                 return
             for task in [*tasks, *duplicates]:

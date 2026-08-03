@@ -1,0 +1,64 @@
+name: gpt-auto-register
+
+x-app: &app
+  image: ${GPT_AUTO_IMAGE:-mikmyp/chatgpt-automation-register:latest}
+  restart: unless-stopped
+  environment: &app-environment
+    GPT_AUTO_ENVIRONMENT: production
+    GPT_AUTO_DATABASE_URL: postgresql+psycopg://gpt_auto:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@database:5432/gpt_auto
+    GPT_AUTO_HOST: 0.0.0.0
+    GPT_AUTO_COOKIE_SECURE: ${COOKIE_SECURE:?set COOKIE_SECURE to true behind HTTPS}
+    GPT_AUTO_TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:?set TRUSTED_ORIGINS}
+    GPT_AUTO_TRUSTED_HOSTS: ${TRUSTED_HOSTS:?set TRUSTED_HOSTS}
+    GPT_AUTO_FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+  volumes:
+    - app-data:/app/data
+
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gpt_auto
+      POSTGRES_USER: gpt_auto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gpt_auto -d gpt_auto"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["gpt-auto-migrate"]
+    depends_on:
+      database:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["gpt-auto-api"]
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    <<: *app
+    command: ["gpt-auto-worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  app-data:
+  postgres-data:

@@ -1,6 +1,6 @@
 from collections.abc import Collection
 
-from sqlalchemy import and_, exists, func, literal, or_, select
+from sqlalchemy import and_, case, exists, func, literal, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -25,23 +25,21 @@ def list_security_candidate_credentials(
     offset: int,
 ) -> tuple[list[Credential], int]:
     password_status = func.coalesce(
-        func.json_extract(Credential.metadata_json, "$.account_security.password.status"),
-        func.iif(
-            and_(Credential.password.is_not(None), Credential.password != ""),
-            "set",
-            "not_set",
+        Credential.metadata_json["account_security"]["password"]["status"].as_string(),
+        case(
+            (Credential.password.is_not(None), "set"),
+            else_="not_set",
         ),
     )
     mfa_status = func.coalesce(
-        func.json_extract(Credential.metadata_json, "$.account_security.mfa.status"),
-        func.iif(
-            and_(Credential.totp_secret.is_not(None), Credential.totp_secret != ""),
-            "enabled",
-            "not_enabled",
+        Credential.metadata_json["account_security"]["mfa"]["status"].as_string(),
+        case(
+            (Credential.totp_secret.is_not(None), "enabled"),
+            else_="not_enabled",
         ),
     )
     password_value_available = or_(
-        and_(Credential.password.is_not(None), Credential.password != ""),
+        Credential.password.is_not(None),
         literal(fixed_password_available),
     )
     password_complete = and_(
@@ -50,7 +48,6 @@ def list_security_candidate_credentials(
     )
     mfa_complete = and_(
         Credential.totp_secret.is_not(None),
-        Credential.totp_secret != "",
         mfa_status == "enabled",
     )
     filters: list[ColumnElement[bool]] = [or_(~password_complete, ~mfa_complete)]
@@ -86,7 +83,6 @@ def list_kakao_candidate_credentials(
     )
     filters: list[ColumnElement[bool]] = [
         Credential.access_token.is_not(None),
-        Credential.access_token != "",
         ~completed_claim,
     ]
     search_filter = _search_filter(search)

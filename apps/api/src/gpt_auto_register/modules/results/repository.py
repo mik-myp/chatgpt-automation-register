@@ -1,4 +1,4 @@
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -31,8 +31,8 @@ class ResultRepository:
         }
         if token_filter in token_columns:
             column = token_columns[token_filter]
-            filters.append(and_(column.is_not(None), column != ""))
-        plus_state = func.json_extract(Credential.metadata_json, "$.plus_check.state")
+            filters.append(column.is_not(None))
+        plus_state = Credential.metadata_json["plus_check"]["state"].as_string()
         if token_filter == "plus":
             filters.append(plus_state == "plus")
         elif token_filter == "not_plus":

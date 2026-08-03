@@ -50,25 +50,18 @@ class AccountRepository:
         query = select(OutlookAccount)
         count_query = select(func.count()).select_from(OutlookAccount)
         if security_filter in {"incomplete", "complete"}:
-            password_status = func.json_extract(
-                Credential.metadata_json,
-                "$.account_security.password.status",
-            )
-            mfa_status = func.json_extract(
-                Credential.metadata_json,
-                "$.account_security.mfa.status",
-            )
+            password_status = Credential.metadata_json["account_security"]["password"][
+                "status"
+            ].as_string()
+            mfa_status = Credential.metadata_json["account_security"]["mfa"]["status"].as_string()
             password_complete_parts: list[ColumnElement[bool]] = [
                 password_status.in_(["set", "available"])
             ]
             if not fixed_password_available:
-                password_complete_parts.extend(
-                    [Credential.password.is_not(None), Credential.password != ""]
-                )
+                password_complete_parts.extend([Credential.password.is_not(None)])
             password_complete = and_(*password_complete_parts)
             mfa_complete = and_(
                 Credential.totp_secret.is_not(None),
-                Credential.totp_secret != "",
                 mfa_status == "enabled",
             )
             password_incomplete_parts: list[ColumnElement[bool]] = [
@@ -76,13 +69,10 @@ class AccountRepository:
                 password_status.notin_(["set", "available"]),
             ]
             if not fixed_password_available:
-                password_incomplete_parts.extend(
-                    [Credential.password.is_(None), Credential.password == ""]
-                )
+                password_incomplete_parts.extend([Credential.password.is_(None)])
             password_incomplete = or_(*password_incomplete_parts)
             mfa_incomplete = or_(
                 Credential.totp_secret.is_(None),
-                Credential.totp_secret == "",
                 mfa_status.is_(None),
                 mfa_status != "enabled",
             )

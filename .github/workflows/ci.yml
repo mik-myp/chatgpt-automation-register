@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm setup:api
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  migrations:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite, postgresql]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: gpt_auto_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gpt_auto_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e 'apps/api[dev]'
+      - name: Upgrade database
+        working-directory: apps/api
+        env:
+          GPT_AUTO_DATA_PATH: ${{ runner.temp }}/data
+          GPT_AUTO_DATABASE_URL: ${{ matrix.database == 'sqlite' && format('sqlite+pysqlite:///{0}/test.db', runner.temp) || 'postgresql+psycopg://postgres:postgres@127.0.0.1:5432/gpt_auto_test' }}
+        run: alembic upgrade head
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: gpt-auto-register:test
+          load: true
+      - run: docker run --rm gpt-auto-register:test gpt-auto-cli --help

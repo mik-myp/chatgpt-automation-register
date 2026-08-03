@@ -9,15 +9,24 @@ description = "Local API and worker runtime for GPT Auto Register"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2",
+  "argon2-cffi>=23.1,<26",
+  "cryptography>=44,<46",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "curl-cffi>=0.7,<1",
   "pydantic-settings>=2.7,<3",
+  "psycopg[binary]>=3.2,<4",
   "pyotp>=2.9,<3",
   "requests>=2.31,<3",
   "sqlalchemy>=2.0.36,<3",
   "uvicorn[standard]>=0.34,<1",
 ]
+
+[project.scripts]
+gpt-auto-api = "gpt_auto_register.entrypoints.api:main"
+gpt-auto-worker = "gpt_auto_register.entrypoints.worker:main"
+gpt-auto-migrate = "gpt_auto_register.entrypoints.migrate:main"
+gpt-auto-cli = "gpt_auto_register.entrypoints.cli:main"
 
 [project.optional-dependencies]
 dev = [

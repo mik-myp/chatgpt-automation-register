@@ -88,10 +88,16 @@ export function DataTransferPanel({
   const [confirmed, setConfirmed] = useState(false)
   const [exportPassphrase, setExportPassphrase] = useState("")
   const [importPassphrase, setImportPassphrase] = useState("")
+  const [exportAdminPassword, setExportAdminPassword] = useState("")
+  const [importAdminPassword, setImportAdminPassword] = useState("")
   const storage = useGetStorageStatsApiSettingsDataStorageGet()
   const exporting = useMutation<BackupBundle, ApiError>({
-    mutationFn: () => apiRequest<BackupBundle>("/api/settings/data/export"),
+    mutationFn: () =>
+      apiRequest<BackupBundle>("/api/settings/data/export", {
+        headers: { "X-Reauth-Password": exportAdminPassword },
+      }),
     onSuccess: (value) => {
+      setExportAdminPassword("")
       void (async () => {
         const exported = exportPassphrase
           ? await encryptBackup(value, exportPassphrase)
@@ -137,6 +143,7 @@ export function DataTransferPanel({
     mutationFn: () =>
       apiRequest("/api/settings/data/import", {
         method: "POST",
+        headers: { "X-Reauth-Password": importAdminPassword },
         data: {
           bundle,
           sections,
@@ -151,6 +158,7 @@ export function DataTransferPanel({
       setBundle(null)
       setPreview(null)
       setConfirmed(false)
+      setImportAdminPassword("")
     },
     onError: (error) => toast.error(error.message),
   })
@@ -192,7 +200,15 @@ export function DataTransferPanel({
         title="导出备份"
         description="导出系统配置、邮箱凭据、注册令牌和 Authenticator 密钥。备份文件包含敏感数据，请只保存在可信设备。"
       >
-        <div className="grid items-end gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="grid items-end gap-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+          <Field label="管理员密码（重新验证）">
+            <Input
+              autoComplete="current-password"
+              type="password"
+              value={exportAdminPassword}
+              onChange={(event) => setExportAdminPassword(event.target.value)}
+            />
+          </Field>
           <Field label="加密口令（可选，仅在本机处理）">
             <Input
               autoComplete="new-password"
@@ -216,7 +232,15 @@ export function DataTransferPanel({
         title="导入与同步"
         description="合并会保留本机额外数据；覆盖会移除所选分区中备份不存在的数据，但使用中的账号和被历史任务引用的卡密会受到保护。"
       >
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="管理员密码（重新验证）">
+            <Input
+              autoComplete="current-password"
+              type="password"
+              value={importAdminPassword}
+              onChange={(event) => setImportAdminPassword(event.target.value)}
+            />
+          </Field>
           <Field label="解密口令（加密文件必填）">
             <Input
               autoComplete="current-password"
