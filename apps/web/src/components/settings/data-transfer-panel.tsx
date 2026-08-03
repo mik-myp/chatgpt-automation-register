@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import { Database, Download, Upload } from "lucide-react"
+import { Database, Download, FileArchive, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -18,6 +18,7 @@ import {
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
 import { Input } from "@workspace/ui/components/input"
+import { Separator } from "@workspace/ui/components/separator"
 import {
   Select,
   SelectContent,
@@ -96,7 +97,7 @@ export function DataTransferPanel({
           ? await encryptBackup(value, exportPassphrase)
           : value
         const blob = new Blob([JSON.stringify(exported, null, 2)], {
-        type: "application/json",
+          type: "application/json",
         })
         const url = URL.createObjectURL(blob)
         const anchor = document.createElement("a")
@@ -164,6 +165,23 @@ export function DataTransferPanel({
         `已清理 ${value.removed_job_events} 条过期日志和 ${value.removed_backup_files} 个恢复点`
       )
       void storage.refetch()
+    },
+    onError: (error) => toast.error(error.message),
+  })
+  const diagnostics = useMutation<Blob, ApiError>({
+    mutationFn: () =>
+      apiRequest<Blob>("/api/settings/data/diagnostics", {
+        responseType: "blob",
+      }),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      const timestamp = new Date().toISOString().replaceAll(":", "-")
+      anchor.href = url
+      anchor.download = `gpt-auto-register-diagnostics-${timestamp}.zip`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      toast.success("诊断日志包已导出")
     },
     onError: (error) => toast.error(error.message),
   })
@@ -374,12 +392,14 @@ export function DataTransferPanel({
           <div className="text-xs text-muted-foreground">
             <div>数据库 {formatBytes(storage.data?.database_bytes ?? 0)}</div>
             <div className="mt-1">
-              日志 {storage.data?.job_events ?? 0} 条，待清理 {storage.data?.expired_job_events ?? 0} 条
+              日志 {storage.data?.job_events ?? 0} 条，待清理{" "}
+              {storage.data?.expired_job_events ?? 0} 条
             </div>
           </div>
           <div className="text-xs text-muted-foreground">
             <div>
-              恢复点 {storage.data?.backup_files ?? 0} 个，共 {formatBytes(storage.data?.backup_bytes ?? 0)}
+              恢复点 {storage.data?.backup_files ?? 0} 个，共{" "}
+              {formatBytes(storage.data?.backup_bytes ?? 0)}
             </div>
             <Button
               className="mt-2"
@@ -391,6 +411,26 @@ export function DataTransferPanel({
               立即清理
             </Button>
           </div>
+        </div>
+        <Separator className="my-4" />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">诊断日志包</div>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
+              包含最近 200 个任务、最多 20,000 条任务日志和最近 100
+              个流水线摘要。文件不加密、不脱敏，日志中的邮箱、手机号、验证码、代理凭据、Cookie、密码和
+              Token 会按原文保留，请只交给可信的排查人员。
+            </p>
+          </div>
+          <Button
+            className="shrink-0"
+            disabled={diagnostics.isPending}
+            onClick={() => diagnostics.mutate()}
+            variant="outline"
+          >
+            <FileArchive />
+            {diagnostics.isPending ? "正在打包" : "导出诊断包"}
+          </Button>
         </div>
       </Section>
     </div>

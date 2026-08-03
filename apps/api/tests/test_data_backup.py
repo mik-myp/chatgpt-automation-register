@@ -1,5 +1,7 @@
 import hashlib
+import io
 import json
+import zipfile
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -115,3 +117,62 @@ def test_storage_cleanup_removes_only_expired_events(
     cleaned = client.post("/api/settings/data/cleanup").json()
     assert cleaned["removed_job_events"] == 1
     assert db_session.query(JobEvent).count() == 1
+
+
+def test_diagnostic_export_preserves_raw_runtime_context(
+    client: TestClient, db_session: Session
+) -> None:
+    job = Job(
+        kind="pipeline.run",
+        status="failed",
+        payload={"access_token": "payload-secret"},
+        error="alice@example.com password=hunter2",
+    )
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        JobEvent(
+            job_id=job.id,
+            sequence=1,
+            event_type="runtime_log",
+            level="error",
+            message=("alice@example.com phone=13800138000 验证码: 123456 Bearer header-secret"),
+            data={
+                "access_token": "event-secret",
+                "nested": {"email": "alice@example.com", "reason": "network timeout"},
+            },
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/settings/data/diagnostics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "gpt-auto-register-diagnostics-" in response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert set(archive.namelist()) == {
+            "README.txt",
+            "manifest.json",
+            "jobs.jsonl",
+            "job-events.jsonl",
+            "pipelines.jsonl",
+        }
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        exported = b"\n".join(archive.read(name) for name in archive.namelist())
+
+    assert manifest["format"] == "gpt-auto-register-diagnostics"
+    assert manifest["scope"]["exported_jobs"] == 1
+    assert manifest["scope"]["exported_job_events"] == 1
+    for raw_value in (
+        b"alice@example.com",
+        b"hunter2",
+        b"13800138000",
+        b"123456",
+        b"header-secret",
+        b"event-secret",
+    ):
+        assert raw_value in exported
+    assert b"payload-secret" not in exported
+    assert manifest["security"]["encrypted"] is False
+    assert manifest["security"]["redacted"] is False

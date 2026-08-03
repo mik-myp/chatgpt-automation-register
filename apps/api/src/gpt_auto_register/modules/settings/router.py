@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.core.config import get_settings as get_app_settings
+from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.kakao import KakaoCard
 from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient
 from gpt_auto_register.modules.settings.backup import export_bundle, import_bundle, preview_bundle
+from gpt_auto_register.modules.settings.diagnostics import build_diagnostic_bundle
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage, storage_stats
 from gpt_auto_register.modules.settings.schemas import (
     BackupBundle,
@@ -79,6 +81,21 @@ def cleanup_data(db: DatabaseSession) -> StorageCleanupResponse:
         db,
         retention_days=maintenance.job_log_retention_days,
         backup_directory=settings.backup_path,
+    )
+
+
+@router.get("/data/diagnostics", response_class=Response)
+def export_diagnostics(db: DatabaseSession) -> Response:
+    settings = get_app_settings()
+    timestamp = utc_now().strftime("%Y%m%d-%H%M%SZ")
+    return Response(
+        content=build_diagnostic_bundle(db, settings),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="gpt-auto-register-diagnostics-{timestamp}.zip"'
+            )
+        },
     )
 
 
