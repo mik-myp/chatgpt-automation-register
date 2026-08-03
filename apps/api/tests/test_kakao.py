@@ -8,6 +8,7 @@ from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
+    KakaoClaimState,
     KakaoEmailClaim,
     KakaoTask,
     KakaoTaskStatus,
@@ -93,17 +94,12 @@ def test_kakao_sync_marks_email_when_payment_link_is_generated(
 
     assert response.status_code == 200
     db_session.expire_all()
-    credential = db_session.get(Credential, kakao_task.email)
     saved_task = db_session.get(KakaoTask, kakao_task.id)
-    assert credential is not None
+    claim = db_session.get(KakaoEmailClaim, kakao_task.email)
     assert saved_task is not None
     assert saved_task.payment_url == "https://pay.example.com/generated"
-    extraction = credential.metadata_json["kakao_extraction"]
-    assert extraction["completed"] is True
-    assert extraction["completed_at"]
-    assert extraction["task_id"] == kakao_task.id
-    assert extraction["upstream_job_id"] == kakao_task.upstream_job_id
-    assert extraction["payment_url"] == "https://pay.example.com/generated"
+    assert claim is not None
+    assert claim.state == KakaoClaimState.COMPLETED
 
 
 def test_kakao_email_claim_allows_only_one_pipeline_item(db_session: Session) -> None:

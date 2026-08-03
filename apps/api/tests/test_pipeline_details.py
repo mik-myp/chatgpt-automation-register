@@ -7,6 +7,8 @@ from gpt_auto_register.db.models.jobs import Job, JobEvent
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
+    KakaoClaimState,
+    KakaoEmailClaim,
     KakaoTask,
     KakaoTaskStatus,
     PipelineCardAllocation,
@@ -523,7 +525,7 @@ def test_kakao_candidates_exclude_accounts_in_active_kakao_runs(
     assert response.json()["items"][0]["eligibility_state"] == "eligible"
 
 
-def test_kakao_candidates_exclude_completed_and_historical_extractions(
+def test_kakao_candidates_only_exclude_completed_claims(
     client: TestClient,
     db_session: Session,
 ) -> None:
@@ -532,36 +534,34 @@ def test_kakao_candidates_exclude_completed_and_historical_extractions(
         access_token="available-token",
         metadata_json={},
     )
-    marked = Credential(
-        email="candidate-marked@example.com",
-        access_token="marked-token",
+    completed = Credential(
+        email="candidate-completed@example.com",
+        access_token="completed-token",
+        metadata_json={},
+    )
+    old_metadata = Credential(
+        email="candidate-old-metadata@example.com",
+        access_token="old-metadata-token",
         metadata_json={"kakao_extraction": {"completed": True}},
     )
-    historical = Credential(
-        email="candidate-history@example.com",
-        access_token="history-token",
+    old_task = Credential(
+        email="candidate-old-task@example.com",
+        access_token="old-task-token",
         metadata_json={},
     )
-    legacy = Credential(
-        email="candidate-legacy@example.com",
-        access_token="legacy-token",
-        metadata_json={},
-    )
-    db_session.add_all([available, marked, historical, legacy])
+    db_session.add_all([available, completed, old_metadata, old_task])
     db_session.flush()
     db_session.add_all(
         [
-            KakaoTask(
-                upstream_job_id="history-payment-link",
-                email=historical.email,
-                status=KakaoTaskStatus.DONE,
-                payment_url="https://pay.example.com/history",
+            KakaoEmailClaim(
+                email=completed.email,
+                state=KakaoClaimState.COMPLETED,
             ),
             KakaoTask(
-                upstream_job_id="legacy-payload-link",
-                email=legacy.email,
+                upstream_job_id="old-payment-link",
+                email=old_task.email,
                 status=KakaoTaskStatus.DONE,
-                upstream_payload={"link": "https://pay.example.com/legacy"},
+                payment_url="https://pay.example.com/old",
             ),
         ]
     )
@@ -570,7 +570,11 @@ def test_kakao_candidates_exclude_completed_and_historical_extractions(
     response = client.get("/api/pipelines/runs/kakao-candidates")
 
     assert response.status_code == 200
-    assert [item["email"] for item in response.json()["items"]] == [available.email]
+    assert {item["email"] for item in response.json()["items"]} == {
+        available.email,
+        old_metadata.email,
+        old_task.email,
+    }
 
 
 def test_create_kakao_pipeline_rejects_stale_completed_selection(
@@ -580,11 +584,9 @@ def test_create_kakao_pipeline_rejects_stale_completed_selection(
     email = "stale-kakao-selection@example.com"
     db_session.add(Credential(email=email, access_token="token", metadata_json={}))
     db_session.add(
-        KakaoTask(
-            upstream_job_id="stale-selection-link",
+        KakaoEmailClaim(
             email=email,
-            status=KakaoTaskStatus.DONE,
-            payment_url="https://pay.example.com/stale",
+            state=KakaoClaimState.COMPLETED,
         )
     )
     db_session.commit()
@@ -607,13 +609,17 @@ def test_registration_kakao_candidates_exclude_completed_extractions(
     completed = Credential(
         email="source-completed@example.com",
         access_token="completed-token",
-        metadata_json={"kakao_extraction": {"completed": True}},
+        metadata_json={},
     )
     run = PipelineRun(kind=PipelineRunKind.REGISTRATION, target_count=2)
     db_session.add_all([available, completed, run])
     db_session.flush()
     db_session.add_all(
         [
+            KakaoEmailClaim(
+                email=completed.email,
+                state=KakaoClaimState.COMPLETED,
+            ),
             PipelineItem(
                 pipeline_run_id=run.id,
                 position=0,

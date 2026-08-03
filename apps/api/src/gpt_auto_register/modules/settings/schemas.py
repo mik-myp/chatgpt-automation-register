@@ -230,7 +230,7 @@ class BackupScope(BaseModel):
 
 class BackupBundle(BaseModel):
     format: Literal["gpt-auto-register-backup"]
-    version: Literal[2]
+    version: Literal[3]
     exported_at: datetime
     scope: BackupScope
     sections: dict[str, list[dict[str, Any]]]

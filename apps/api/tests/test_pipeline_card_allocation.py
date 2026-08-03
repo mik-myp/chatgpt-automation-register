@@ -11,8 +11,9 @@ from gpt_auto_register.db.models.jobs import Job
 from gpt_auto_register.db.models.kakao import (
     KakaoCard,
     KakaoCardBatch,
+    KakaoClaimState,
+    KakaoEmailClaim,
     KakaoTask,
-    KakaoTaskStatus,
     PipelineCardAllocation,
 )
 from gpt_auto_register.db.models.pipeline import (
@@ -245,7 +246,7 @@ def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
         ]
 
 
-def test_kakao_submission_skips_email_with_historical_payment_link(
+def test_kakao_submission_skips_email_with_completed_claim(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -261,13 +262,11 @@ def test_kakao_submission_skips_email_with_historical_payment_link(
     item = PipelineItem(pipeline_run_id=run.id, position=0, account_email=email)
     job = Job(id="skip-kakao-job", kind="pipeline.run", payload={})
     credential = Credential(email=email, access_token="access-token", metadata_json={})
-    historical = KakaoTask(
-        upstream_job_id="already-extracted-task",
+    completed_claim = KakaoEmailClaim(
         email=email,
-        status=KakaoTaskStatus.DONE,
-        payment_url="https://pay.example.com/already-extracted",
+        state=KakaoClaimState.COMPLETED,
     )
-    db_session.add_all([item, job, credential, historical])
+    db_session.add_all([item, job, credential, completed_claim])
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)

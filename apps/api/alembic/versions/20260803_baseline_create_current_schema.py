@@ -1,8 +1,8 @@
-"""create core schema
+"""create current schema
 
-Revision ID: ab57afc7b327
+Revision ID: 20260803_baseline
 Revises:
-Create Date: 2026-08-01 23:20:20.355210
+Create Date: 2026-08-03 09:10:14.244102
 """
 
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "ab57afc7b327"
+revision: str = "20260803_baseline"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -38,53 +38,12 @@ def upgrade() -> None:
         sa.Column("id_token", sa.Text(), nullable=True),
         sa.Column("device_id", sa.String(length=255), nullable=True),
         sa.Column("cookie_header", sa.Text(), nullable=True),
+        sa.Column("totp_secret", sa.Text(), nullable=True),
         sa.Column("metadata_json", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("email", name=op.f("pk_credentials")),
     )
-    op.create_table(
-        "jobs",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("kind", sa.String(length=64), nullable=False),
-        sa.Column(
-            "status",
-            sa.Enum(
-                "queued",
-                "running",
-                "succeeded",
-                "failed",
-                "canceled",
-                name="job_status",
-                native_enum=False,
-            ),
-            nullable=False,
-        ),
-        sa.Column("priority", sa.Integer(), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=False),
-        sa.Column("result", sa.JSON(), nullable=False),
-        sa.Column("attempts", sa.Integer(), nullable=False),
-        sa.Column("max_attempts", sa.Integer(), nullable=False),
-        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("lease_owner", sa.String(length=128), nullable=True),
-        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_jobs")),
-    )
-    with op.batch_alter_table("jobs", schema=None) as batch_op:
-        batch_op.create_index(
-            "ix_jobs_claim", ["status", "available_at", "priority", "created_at"], unique=False
-        )
-        batch_op.create_index(batch_op.f("ix_jobs_kind"), ["kind"], unique=False)
-        batch_op.create_index(
-            batch_op.f("ix_jobs_lease_expires_at"), ["lease_expires_at"], unique=False
-        )
-        batch_op.create_index(batch_op.f("ix_jobs_lease_owner"), ["lease_owner"], unique=False)
-        batch_op.create_index(batch_op.f("ix_jobs_status"), ["status"], unique=False)
-
     op.create_table(
         "kakao_card_batches",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -136,6 +95,18 @@ def upgrade() -> None:
         "pipeline_runs",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column(
+            "kind",
+            sa.Enum(
+                "registration",
+                "account_security",
+                "kakao",
+                name="pipeline_run_kind",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column("source_pipeline_run_id", sa.String(length=36), nullable=True),
+        sa.Column(
             "status",
             sa.Enum(
                 "queued",
@@ -161,9 +132,21 @@ def upgrade() -> None:
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["source_pipeline_run_id"],
+            ["pipeline_runs.id"],
+            name=op.f("fk_pipeline_runs_source_pipeline_run_id_pipeline_runs"),
+            ondelete="SET NULL",
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_pipeline_runs")),
     )
     with op.batch_alter_table("pipeline_runs", schema=None) as batch_op:
+        batch_op.create_index(batch_op.f("ix_pipeline_runs_kind"), ["kind"], unique=False)
+        batch_op.create_index(
+            batch_op.f("ix_pipeline_runs_source_pipeline_run_id"),
+            ["source_pipeline_run_id"],
+            unique=False,
+        )
         batch_op.create_index(batch_op.f("ix_pipeline_runs_status"), ["status"], unique=False)
 
     op.create_table(
@@ -197,23 +180,56 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f("ix_registration_runs_status"), ["status"], unique=False)
 
     op.create_table(
-        "job_events",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("job_id", sa.String(length=36), nullable=False),
-        sa.Column("sequence", sa.Integer(), nullable=False),
-        sa.Column("level", sa.String(length=16), nullable=False),
-        sa.Column("event_type", sa.String(length=64), nullable=False),
-        sa.Column("message", sa.Text(), nullable=False),
-        sa.Column("data", sa.JSON(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["job_id"], ["jobs.id"], name=op.f("fk_job_events_job_id_jobs"), ondelete="CASCADE"
+        "jobs",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("kind", sa.String(length=64), nullable=False),
+        sa.Column("pipeline_run_id", sa.String(length=36), nullable=True),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "canceled",
+                name="job_status",
+                native_enum=False,
+            ),
+            nullable=False,
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_job_events")),
-        sa.UniqueConstraint("job_id", "sequence", name="uq_job_events_job_sequence"),
+        sa.Column("priority", sa.Integer(), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column("result", sa.JSON(), nullable=False),
+        sa.Column("attempts", sa.Integer(), nullable=False),
+        sa.Column("max_attempts", sa.Integer(), nullable=False),
+        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("lease_owner", sa.String(length=128), nullable=True),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["pipeline_run_id"],
+            ["pipeline_runs.id"],
+            name=op.f("fk_jobs_pipeline_run_id_pipeline_runs"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_jobs")),
     )
-    with op.batch_alter_table("job_events", schema=None) as batch_op:
-        batch_op.create_index(batch_op.f("ix_job_events_job_id"), ["job_id"], unique=False)
+    with op.batch_alter_table("jobs", schema=None) as batch_op:
+        batch_op.create_index(
+            "ix_jobs_claim", ["status", "available_at", "priority", "created_at"], unique=False
+        )
+        batch_op.create_index(batch_op.f("ix_jobs_kind"), ["kind"], unique=False)
+        batch_op.create_index(
+            batch_op.f("ix_jobs_lease_expires_at"), ["lease_expires_at"], unique=False
+        )
+        batch_op.create_index(batch_op.f("ix_jobs_lease_owner"), ["lease_owner"], unique=False)
+        batch_op.create_index(
+            batch_op.f("ix_jobs_pipeline_run_id"), ["pipeline_run_id"], unique=False
+        )
+        batch_op.create_index(batch_op.f("ix_jobs_status"), ["status"], unique=False)
 
     op.create_table(
         "kakao_cards",
@@ -243,6 +259,7 @@ def upgrade() -> None:
         sa.Column("pipeline_run_id", sa.String(length=36), nullable=False),
         sa.Column("position", sa.Integer(), nullable=False),
         sa.Column("account_email", sa.String(length=320), nullable=True),
+        sa.Column("mail_url_snapshot", sa.Text(), nullable=True),
         sa.Column("registration_run_id", sa.String(length=36), nullable=True),
         sa.Column("card_code_snapshot", sa.Text(), nullable=True),
         sa.Column(
@@ -261,6 +278,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("eligibility_state", sa.String(length=64), nullable=True),
+        sa.Column("password_status", sa.String(length=32), nullable=True),
+        sa.Column("mfa_status", sa.String(length=32), nullable=True),
+        sa.Column("security_error", sa.Text(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -294,12 +314,67 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f("ix_pipeline_items_status"), ["status"], unique=False)
 
     op.create_table(
+        "job_events",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("job_id", sa.String(length=36), nullable=False),
+        sa.Column("sequence", sa.Integer(), nullable=False),
+        sa.Column("level", sa.String(length=16), nullable=False),
+        sa.Column("event_type", sa.String(length=64), nullable=False),
+        sa.Column("message", sa.Text(), nullable=False),
+        sa.Column("data", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["job_id"], ["jobs.id"], name=op.f("fk_job_events_job_id_jobs"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_job_events")),
+        sa.UniqueConstraint("job_id", "sequence", name="uq_job_events_job_sequence"),
+    )
+    with op.batch_alter_table("job_events", schema=None) as batch_op:
+        batch_op.create_index(batch_op.f("ix_job_events_job_id"), ["job_id"], unique=False)
+
+    op.create_table(
+        "kakao_email_claims",
+        sa.Column("email", sa.String(length=320), nullable=False),
+        sa.Column(
+            "state",
+            sa.Enum("active", "completed", name="kakao_claim_state", native_enum=False),
+            nullable=False,
+        ),
+        sa.Column("pipeline_run_id", sa.String(length=36), nullable=True),
+        sa.Column("pipeline_item_id", sa.String(length=36), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["pipeline_item_id"],
+            ["pipeline_items.id"],
+            name=op.f("fk_kakao_email_claims_pipeline_item_id_pipeline_items"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["pipeline_run_id"],
+            ["pipeline_runs.id"],
+            name=op.f("fk_kakao_email_claims_pipeline_run_id_pipeline_runs"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("email", name=op.f("pk_kakao_email_claims")),
+    )
+    with op.batch_alter_table("kakao_email_claims", schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f("ix_kakao_email_claims_pipeline_item_id"), ["pipeline_item_id"], unique=False
+        )
+        batch_op.create_index(
+            batch_op.f("ix_kakao_email_claims_pipeline_run_id"), ["pipeline_run_id"], unique=False
+        )
+        batch_op.create_index(batch_op.f("ix_kakao_email_claims_state"), ["state"], unique=False)
+
+    op.create_table(
         "kakao_tasks",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("upstream_job_id", sa.String(length=255), nullable=False),
         sa.Column("pipeline_run_id", sa.String(length=36), nullable=True),
         sa.Column("pipeline_item_id", sa.String(length=36), nullable=True),
-        sa.Column("card_id", sa.String(length=36), nullable=False),
+        sa.Column("card_id", sa.String(length=36), nullable=True),
+        sa.Column("card_code_snapshot", sa.Text(), nullable=True),
         sa.Column("email", sa.String(length=320), nullable=False),
         sa.Column(
             "status",
@@ -315,6 +390,10 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("payment_status", sa.String(length=64), nullable=True),
+        sa.Column("payment_message", sa.Text(), nullable=True),
+        sa.Column("payment_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("payment_scanned", sa.Boolean(), nullable=True),
+        sa.Column("payment_successful", sa.Boolean(), nullable=True),
         sa.Column("card_charged", sa.Boolean(), nullable=True),
         sa.Column("payment_url", sa.Text(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
@@ -325,7 +404,7 @@ def upgrade() -> None:
             ["card_id"],
             ["kakao_cards.id"],
             name=op.f("fk_kakao_tasks_card_id_kakao_cards"),
-            ondelete="RESTRICT",
+            ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["pipeline_item_id"],
@@ -344,6 +423,9 @@ def upgrade() -> None:
     with op.batch_alter_table("kakao_tasks", schema=None) as batch_op:
         batch_op.create_index(batch_op.f("ix_kakao_tasks_card_id"), ["card_id"], unique=False)
         batch_op.create_index(batch_op.f("ix_kakao_tasks_email"), ["email"], unique=False)
+        batch_op.create_index(
+            batch_op.f("ix_kakao_tasks_payment_expires_at"), ["payment_expires_at"], unique=False
+        )
         batch_op.create_index(
             batch_op.f("ix_kakao_tasks_payment_status"), ["payment_status"], unique=False
         )
@@ -394,10 +476,21 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f("ix_kakao_tasks_pipeline_run_id"))
         batch_op.drop_index(batch_op.f("ix_kakao_tasks_pipeline_item_id"))
         batch_op.drop_index(batch_op.f("ix_kakao_tasks_payment_status"))
+        batch_op.drop_index(batch_op.f("ix_kakao_tasks_payment_expires_at"))
         batch_op.drop_index(batch_op.f("ix_kakao_tasks_email"))
         batch_op.drop_index(batch_op.f("ix_kakao_tasks_card_id"))
 
     op.drop_table("kakao_tasks")
+    with op.batch_alter_table("kakao_email_claims", schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f("ix_kakao_email_claims_state"))
+        batch_op.drop_index(batch_op.f("ix_kakao_email_claims_pipeline_run_id"))
+        batch_op.drop_index(batch_op.f("ix_kakao_email_claims_pipeline_item_id"))
+
+    op.drop_table("kakao_email_claims")
+    with op.batch_alter_table("job_events", schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f("ix_job_events_job_id"))
+
+    op.drop_table("job_events")
     with op.batch_alter_table("pipeline_items", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_pipeline_items_status"))
         batch_op.drop_index(batch_op.f("ix_pipeline_items_registration_run_id"))
@@ -409,10 +502,15 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f("ix_kakao_cards_batch_id"))
 
     op.drop_table("kakao_cards")
-    with op.batch_alter_table("job_events", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_job_events_job_id"))
+    with op.batch_alter_table("jobs", schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f("ix_jobs_status"))
+        batch_op.drop_index(batch_op.f("ix_jobs_pipeline_run_id"))
+        batch_op.drop_index(batch_op.f("ix_jobs_lease_owner"))
+        batch_op.drop_index(batch_op.f("ix_jobs_lease_expires_at"))
+        batch_op.drop_index(batch_op.f("ix_jobs_kind"))
+        batch_op.drop_index("ix_jobs_claim")
 
-    op.drop_table("job_events")
+    op.drop_table("jobs")
     with op.batch_alter_table("registration_runs", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_registration_runs_status"))
         batch_op.drop_index(batch_op.f("ix_registration_runs_email"))
@@ -420,6 +518,8 @@ def downgrade() -> None:
     op.drop_table("registration_runs")
     with op.batch_alter_table("pipeline_runs", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_pipeline_runs_status"))
+        batch_op.drop_index(batch_op.f("ix_pipeline_runs_source_pipeline_run_id"))
+        batch_op.drop_index(batch_op.f("ix_pipeline_runs_kind"))
 
     op.drop_table("pipeline_runs")
     with op.batch_alter_table("outlook_accounts", schema=None) as batch_op:
@@ -430,14 +530,6 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f("ix_kakao_card_batches_status"))
 
     op.drop_table("kakao_card_batches")
-    with op.batch_alter_table("jobs", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_jobs_status"))
-        batch_op.drop_index(batch_op.f("ix_jobs_lease_owner"))
-        batch_op.drop_index(batch_op.f("ix_jobs_lease_expires_at"))
-        batch_op.drop_index(batch_op.f("ix_jobs_kind"))
-        batch_op.drop_index("ix_jobs_claim")
-
-    op.drop_table("jobs")
     op.drop_table("credentials")
     op.drop_table("app_settings")
     # ### end Alembic commands ###

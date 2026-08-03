@@ -84,7 +84,7 @@ def export_bundle(session: Session) -> BackupBundle:
     }
     data: dict[str, Any] = {
         "format": "gpt-auto-register-backup",
-        "version": 2,
+        "version": 3,
         "exported_at": utc_now().isoformat(),
         "scope": {
             "included": list(BACKUP_SECTIONS),

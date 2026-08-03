@@ -226,7 +226,7 @@ export function DataTransferPanel({
                       : (parsed as BackupBundle)
                     if (
                       value.format !== "gpt-auto-register-backup" ||
-                      value.version !== 2
+                      value.version !== 3
                     )
                       throw new Error("不是受支持的数据备份")
                     setBundle(value)

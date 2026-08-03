@@ -7,8 +7,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import (
     KakaoClaimState,
     KakaoEmailClaim,
@@ -21,7 +19,6 @@ from gpt_auto_register.modules.kakao.client import (
 )
 
 _KAKAO_STATE_LOCK = threading.RLock()
-_EXTRACTION_METADATA_KEY = "kakao_extraction"
 
 
 class KakaoClaimConflictError(RuntimeError):
@@ -99,28 +96,12 @@ def completed_extraction_emails(
         if emails is not None
         else None
     )
-    credential_query = select(Credential)
-    task_query = select(KakaoTask)
     claim_query = select(KakaoEmailClaim).where(KakaoEmailClaim.state == KakaoClaimState.COMPLETED)
     if requested is not None:
         if not requested:
             return set()
-        credential_query = credential_query.where(func.lower(Credential.email).in_(requested))
-        task_query = task_query.where(func.lower(KakaoTask.email).in_(requested))
         claim_query = claim_query.where(func.lower(KakaoEmailClaim.email).in_(requested))
-
-    completed = {claim.email.strip().lower() for claim in session.scalars(claim_query)}
-    for credential in session.scalars(credential_query):
-        metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
-        extraction = metadata.get(_EXTRACTION_METADATA_KEY)
-        if isinstance(extraction, dict) and extraction.get("completed") is True:
-            completed.add(credential.email.strip().lower())
-    for task in session.scalars(task_query):
-        if str(task.payment_url or "").strip() or canonical_payment_url(
-            task.upstream_payload or {}
-        ):
-            completed.add(task.email.strip().lower())
-    return completed
+    return {claim.email.strip().lower() for claim in session.scalars(claim_query)}
 
 
 def active_extraction_emails(
@@ -211,24 +192,6 @@ def mark_extraction_completed(session: Session, task: KakaoTask) -> bool:
         changed = True
     if claim.state != KakaoClaimState.COMPLETED:
         claim.state = KakaoClaimState.COMPLETED
-        changed = True
-    credential = session.get(Credential, task.email.strip().lower())
-    if credential is None:
-        return changed
-
-    metadata = credential.metadata_json if isinstance(credential.metadata_json, dict) else {}
-    current = metadata.get(_EXTRACTION_METADATA_KEY)
-    current = current if isinstance(current, dict) else {}
-    extraction = {
-        **current,
-        "completed": True,
-        "completed_at": str(current.get("completed_at") or utc_now().isoformat()),
-        "task_id": str(task.id or task.upstream_job_id),
-        "upstream_job_id": task.upstream_job_id,
-        "payment_url": payment_url,
-    }
-    if current != extraction:
-        credential.metadata_json = {**metadata, _EXTRACTION_METADATA_KEY: extraction}
         changed = True
     return changed
 

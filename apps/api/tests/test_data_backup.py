@@ -23,7 +23,7 @@ def test_backup_export_preview_and_merge(client: TestClient, db_session: Session
 
     bundle = client.get("/api/settings/data/export").json()
     assert bundle["format"] == "gpt-auto-register-backup"
-    assert bundle["version"] == 2
+    assert bundle["version"] == 3
     assert "job_events" in bundle["scope"]["excluded"]
     credential = bundle["sections"]["credentials"][0]
     credential["password"] = "new"
@@ -57,6 +57,19 @@ def test_backup_rejects_tampered_bundle(client: TestClient, db_session: Session)
     )
     assert response.status_code == 422
     assert "完整性校验失败" in response.json()["detail"]
+
+
+def test_backup_rejects_previous_format_version(client: TestClient) -> None:
+    bundle = client.get("/api/settings/data/export").json()
+    bundle["version"] = 2
+    _resign(bundle)
+
+    response = client.post(
+        "/api/settings/data/preview",
+        json={"bundle": bundle, "sections": ["settings"], "mode": "merge"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_backup_overwrite_protects_in_use_account(client: TestClient, db_session: Session) -> None:

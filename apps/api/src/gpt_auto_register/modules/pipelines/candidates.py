@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
-from gpt_auto_register.db.models.kakao import KakaoTask
+from gpt_auto_register.db.models.kakao import KakaoClaimState, KakaoEmailClaim
 
 
 def _search_filter(search: str) -> ColumnElement[bool] | None:
@@ -78,42 +78,16 @@ def list_kakao_candidate_credentials(
     limit: int,
     offset: int,
 ) -> tuple[list[Credential], int]:
-    payment_fields = (
-        "nicepay_checkout_url",
-        "kakao_pay_url",
-        "provider_redirect_url",
-        "long_url",
-        "link",
-        "payment_url",
-    )
-    completed_task = exists(
-        select(KakaoTask.id).where(
-            func.lower(KakaoTask.email) == func.lower(Credential.email),
-            or_(
-                and_(KakaoTask.payment_url.is_not(None), KakaoTask.payment_url != ""),
-                *[
-                    func.coalesce(
-                        func.json_extract(KakaoTask.upstream_payload, f"$.{field}"),
-                        "",
-                    )
-                    != ""
-                    for field in payment_fields
-                ],
-            ),
+    completed_claim = exists(
+        select(KakaoEmailClaim.email).where(
+            func.lower(KakaoEmailClaim.email) == func.lower(Credential.email),
+            KakaoEmailClaim.state == KakaoClaimState.COMPLETED,
         )
-    )
-    extraction_completed = (
-        func.coalesce(
-            func.json_extract(Credential.metadata_json, "$.kakao_extraction.completed"),
-            0,
-        )
-        == 1
     )
     filters: list[ColumnElement[bool]] = [
         Credential.access_token.is_not(None),
         Credential.access_token != "",
-        ~extraction_completed,
-        ~completed_task,
+        ~completed_claim,
     ]
     search_filter = _search_filter(search)
     if search_filter is not None:

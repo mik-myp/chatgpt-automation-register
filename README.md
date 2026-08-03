@@ -3,8 +3,7 @@
 本地单用户注册流水线。前端使用 React、React Router、Zustand、TanStack Query 和
 shadcn/ui；后端使用 FastAPI、SQLAlchemy、Alembic 和 SQLite。
 
-项目只提供 WebUI 工作流。注册协议运行时由 API worker 在后台调用，不提供或维护
-单账号命令行注册、旧版 `start_webui.py` 和旧版部署脚本等直接使用入口。
+项目只提供 WebUI 工作流，注册协议运行时由 API worker 在后台调用。
 
 ## 环境
 
@@ -68,9 +67,6 @@ apps/
 packages/
   ui/        shadcn/ui 共享组件
 ```
-
-旧项目功能的逐项移植状态、兼容层边界和后续工作见
-[`docs/migration-audit.md`](docs/migration-audit.md)。
 
 ## 安全边界
 

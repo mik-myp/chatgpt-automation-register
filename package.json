@@ -6,7 +6,6 @@
     "build": "turbo build",
     "api:generate": "orval --config orval.config.ts",
     "api:migrate": "pnpm --filter api run migrate",
-    "api:migrate:accounts": "pnpm --filter api run migrate:accounts",
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "turbo format",

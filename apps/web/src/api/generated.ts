@@ -196,7 +196,7 @@ export interface BackupScope {
 
 export interface BackupBundle {
   format: 'gpt-auto-register-backup';
-  version: 2;
+  version: 3;
   exported_at: string;
   scope: BackupScope;
   sections: BackupBundleSections;
