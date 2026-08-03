@@ -24,6 +24,7 @@ import {
 } from "@/features/accounts/lib/account-state"
 import { accountsRouteState } from "@/features/accounts/lib/accounts-route-state"
 import { formatCompactBeijingDateTime } from "@/lib/date-time"
+import { TOUR_IDS } from "@/lib/product-tours"
 import { useAccountsStore } from "@/stores/accounts-store"
 import { Button } from "@workspace/ui/components/button"
 import { Checkbox } from "@workspace/ui/components/checkbox"
@@ -46,7 +47,8 @@ import {
 
 export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { search, status, page, pageSize, params } = accountsRouteState(searchParams)
+  const { search, status, page, pageSize, params } =
+    accountsRouteState(searchParams)
   const setImportOpen = useAccountsStore((state) => state.setImportOpen)
   const selectedEmails = useAccountsStore((state) => state.selectedEmails)
   const setSelectedEmails = useAccountsStore((state) => state.setSelectedEmails)
@@ -71,21 +73,32 @@ export function AccountsPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+      <div
+        className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between"
+        id={TOUR_IDS.accountsHeader}
+      >
         <h1 className="text-xl font-semibold">邮箱号池</h1>
-        <Button onClick={() => setImportOpen(true)}>
+        <Button
+          id={TOUR_IDS.accountsImport}
+          onClick={() => setImportOpen(true)}
+        >
           <Upload />
           导入邮箱
         </Button>
       </div>
 
-      <StatusBand stats={stats.data} />
+      <div id={TOUR_IDS.accountsStatus}>
+        <StatusBand stats={stats.data} />
+      </div>
 
       <section
         aria-label="账号列表"
         className="flex min-h-0 min-w-0 flex-1 flex-col"
       >
-        <div className="flex flex-col gap-2 border-b pb-3 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className="flex flex-col gap-2 border-b pb-3 sm:flex-row sm:items-center sm:justify-between"
+          id={TOUR_IDS.accountsList}
+        >
           <div className="flex min-w-0 flex-1 gap-2">
             <div className="relative w-full max-w-sm">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -93,14 +106,17 @@ export function AccountsPage() {
                 aria-label="搜索账号"
                 className="pl-8"
                 onChange={(event) => {
-                  setSearchParams((current) => {
-                    const next = new URLSearchParams(current)
-                    const value = event.target.value.trim()
-                    if (value) next.set("search", value)
-                    else next.delete("search")
-                    next.delete("page")
-                    return next
-                  }, { replace: true })
+                  setSearchParams(
+                    (current) => {
+                      const next = new URLSearchParams(current)
+                      const value = event.target.value.trim()
+                      if (value) next.set("search", value)
+                      else next.delete("search")
+                      next.delete("page")
+                      return next
+                    },
+                    { replace: true }
+                  )
                   setSelectedEmails([])
                 }}
                 placeholder="搜索邮箱或失败原因"

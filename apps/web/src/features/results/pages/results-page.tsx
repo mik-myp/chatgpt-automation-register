@@ -13,6 +13,7 @@ import { ResultsTable } from "@/features/results/components/results-table"
 import { downloadResultsJson } from "@/features/results/lib/result-actions"
 import { runResultOperation } from "@/features/results/lib/result-operations"
 import { ApiError } from "@/lib/api-client"
+import { TOUR_IDS } from "@/lib/product-tours"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,9 +80,15 @@ export function ResultsPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div
+        className="flex flex-wrap items-center justify-between gap-2"
+        id={TOUR_IDS.resultsHeader}
+      >
         <h1 className="text-xl font-semibold">注册结果</h1>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <div
+          className="flex flex-wrap items-center justify-end gap-1.5"
+          id={TOUR_IDS.resultsActions}
+        >
           <Button
             disabled={plusMutation.isPending}
             onClick={() => plusMutation.mutate()}
@@ -130,7 +137,9 @@ export function ResultsPage() {
         </div>
       </div>
       <ResultOperationList />
-      <ResultsTable />
+      <div className="flex min-h-0 flex-1">
+        <ResultsTable />
+      </div>
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

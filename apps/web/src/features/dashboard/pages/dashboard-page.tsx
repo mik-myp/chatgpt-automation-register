@@ -7,6 +7,7 @@ import { DashboardResources } from "@/features/dashboard/components/dashboard-re
 import { DashboardStatusStrip } from "@/features/dashboard/components/dashboard-status-strip"
 import { RecentPipelines } from "@/features/dashboard/components/recent-pipelines"
 import { DASHBOARD_RECENT_PIPELINES_PARAMS } from "@/features/dashboard/lib/dashboard-queries"
+import { TOUR_IDS } from "@/lib/product-tours"
 
 export function DashboardPage() {
   const dashboard = useGetDashboardApiDashboardGet()
@@ -39,15 +40,21 @@ export function DashboardPage() {
           />
         </header>
 
-        <DashboardStatusStrip data={data} />
+        <div id={TOUR_IDS.dashboardOverview}>
+          <DashboardStatusStrip data={data} />
+        </div>
 
         <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]">
-          <RecentPipelines
-            error={recent.isError}
-            loading={recent.isLoading}
-            runs={recent.data?.items ?? []}
-          />
-          <DashboardResources data={data} />
+          <div id={TOUR_IDS.dashboardRecent}>
+            <RecentPipelines
+              error={recent.isError}
+              loading={recent.isLoading}
+              runs={recent.data?.items ?? []}
+            />
+          </div>
+          <div id={TOUR_IDS.dashboardResources}>
+            <DashboardResources data={data} />
+          </div>
         </div>
       </div>
     </div>

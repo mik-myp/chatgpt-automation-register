@@ -36,6 +36,8 @@ apps/api/data
 playwright-report
 test-results
 blob-report
+.playwright-cli
+output/playwright
 
 # Editor directories and files
 .vscode/*

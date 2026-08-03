@@ -120,7 +120,7 @@ export function CreateSecurityPipelineDialog({
           aria-label={iconOnly ? "创建修改密码与 MFA 流水线" : undefined}
           size={iconOnly ? "icon-sm" : sourceRunId ? "sm" : "default"}
           title={iconOnly ? "修改密码与 MFA" : undefined}
-          variant="outline"
+          variant="ghost"
         >
           <ShieldCheck />
           {!iconOnly && "修改密码与 MFA"}

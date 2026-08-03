@@ -34,6 +34,7 @@ import { runResultOperation } from "@/features/results/lib/result-operations"
 import { resultsRouteState } from "@/features/results/lib/results-route-state"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { formatBeijingDateTime } from "@/lib/date-time"
+import { TOUR_IDS } from "@/lib/product-tours"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -154,7 +155,10 @@ export function ResultsTable() {
         aria-label="注册结果列表"
         className="flex min-h-0 min-w-0 flex-1 flex-col border-t"
       >
-        <div className="flex flex-wrap items-center gap-2 border-b py-3">
+        <div
+          className="flex flex-wrap items-center gap-2 border-b py-3"
+          id={TOUR_IDS.resultsList}
+        >
           <div className="relative w-full max-w-sm">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input

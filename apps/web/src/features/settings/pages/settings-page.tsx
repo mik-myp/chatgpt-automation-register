@@ -17,6 +17,7 @@ import { RegistrationSettingsTab } from "@/features/settings/components/registra
 import { SettingsFormProvider } from "@/features/settings/components/settings-form-context"
 import { SmsSettingsTab } from "@/features/settings/components/sms-settings-tab"
 import { ApiError } from "@/lib/api-client"
+import { TOUR_IDS } from "@/lib/product-tours"
 import { Button } from "@workspace/ui/components/button"
 import {
   Tabs,
@@ -131,10 +132,14 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-5">
-      <div className="flex items-center justify-between">
+      <div
+        className="flex items-center justify-between"
+        id={TOUR_IDS.settingsHeader}
+      >
         <h1 className="text-xl font-semibold">系统配置</h1>
         <Button
           disabled={mutation.isPending}
+          id={TOUR_IDS.settingsSave}
           onClick={() => mutation.mutate({ data: form })}
         >
           <Save />
@@ -151,7 +156,10 @@ export function SettingsPage() {
           className="flex min-h-0 flex-1 flex-col"
           defaultValue="registration"
         >
-          <TabsList className="w-full shrink-0 justify-start">
+          <TabsList
+            className="w-full shrink-0 justify-start"
+            id={TOUR_IDS.settingsTabs}
+          >
             <TabsTrigger className="shrink-0" value="registration">
               注册
             </TabsTrigger>
@@ -175,36 +183,40 @@ export function SettingsPage() {
             </TabsTrigger>
           </TabsList>
 
-          <RegistrationSettingsTab />
-          <MailSettingsTab />
-          <KakaoSettingsTab />
-          <SmsSettingsTab />
-          <ExportSettingsTab />
-          <TabsContent
-            className="mt-5 min-h-0 flex-1 overflow-auto"
-            value="delivery"
-          >
-            <DeliveryCopyPanel
-              value={form.delivery_copy}
-              onChange={(delivery_copy) => setForm({ ...form, delivery_copy })}
-            />
-          </TabsContent>
-          <TabsContent
-            className="mt-5 min-h-0 flex-1 overflow-auto"
-            value="data"
-          >
-            <DataTransferPanel
-              maintenance={
-                form.maintenance ?? {
-                  job_log_retention_days: 14,
-                  max_runtime_log_lines: 2000,
+          <div className="flex min-h-0 flex-1 flex-col">
+            <RegistrationSettingsTab />
+            <MailSettingsTab />
+            <KakaoSettingsTab />
+            <SmsSettingsTab />
+            <ExportSettingsTab />
+            <TabsContent
+              className="mt-5 min-h-0 flex-1 overflow-auto"
+              value="delivery"
+            >
+              <DeliveryCopyPanel
+                value={form.delivery_copy}
+                onChange={(delivery_copy) =>
+                  setForm({ ...form, delivery_copy })
                 }
-              }
-              onMaintenanceChange={(maintenance) =>
-                setForm({ ...form, maintenance })
-              }
-            />
-          </TabsContent>
+              />
+            </TabsContent>
+            <TabsContent
+              className="mt-5 min-h-0 flex-1 overflow-auto"
+              value="data"
+            >
+              <DataTransferPanel
+                maintenance={
+                  form.maintenance ?? {
+                    job_log_retention_days: 14,
+                    max_runtime_log_lines: 2000,
+                  }
+                }
+                onMaintenanceChange={(maintenance) =>
+                  setForm({ ...form, maintenance })
+                }
+              />
+            </TabsContent>
+          </div>
         </Tabs>
       </SettingsFormProvider>
     </div>

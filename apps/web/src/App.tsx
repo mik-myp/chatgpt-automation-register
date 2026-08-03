@@ -2,6 +2,7 @@ import { Outlet } from "react-router"
 
 import { ApiStatus } from "@/components/api-status"
 import { AppSidebar } from "@/components/app-sidebar"
+import { ProductTourMenu } from "@/components/product-tour-menu"
 
 import {
   SidebarInset,
@@ -17,6 +18,7 @@ export function App() {
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
           <SidebarTrigger className="-ml-1" />
           <ApiStatus />
+          <ProductTourMenu />
         </header>
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
           <Outlet />
