@@ -38,6 +38,7 @@ test-results
 blob-report
 .playwright-cli
 output/playwright
+dogfood-output
 
 # Editor directories and files
 .vscode/*

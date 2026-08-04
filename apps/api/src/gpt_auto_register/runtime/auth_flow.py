@@ -202,7 +202,7 @@ class AuthFlow(AuthPhoneMixin):
             if name in seen:
                 continue
             try:
-                value = self.session.cookies.get(name, "")
+                value = self._get_cookie_value_by_name(name)
             except Exception:
                 value = ""
             if value:
@@ -852,7 +852,7 @@ class AuthFlow(AuthPhoneMixin):
         self.result.password = password
 
         device_id = (self.result.device_id or "").strip() or (
-            self.session.cookies.get("oai-did", "") or ""
+            self._get_cookie_value_by_name("oai-did") or ""
         ).strip()
         if not device_id:
             device_id = str(uuid.uuid4())
@@ -1256,7 +1256,7 @@ class AuthFlow(AuthPhoneMixin):
             host = ""
         if "auth.openai.com" in host:
             device_id = (self.result.device_id or "").strip() or (
-                self.session.cookies.get("oai-did", "") or ""
+                self._get_cookie_value_by_name("oai-did") or ""
             ).strip()
             if device_id:
                 headers["oai-device-id"] = device_id
@@ -1429,13 +1429,13 @@ class AuthFlow(AuthPhoneMixin):
                     device_id = cookie.value
                     break
             elif isinstance(cookie, str) and cookie == "oai-did":
-                device_id = self.session.cookies.get("oai-did", "")
+                device_id = self._get_cookie_value_by_name("oai-did")
                 break
 
         # curl_cffi cookies 访问方式
         if not device_id:
             with contextlib.suppress(Exception):
-                device_id = self.session.cookies.get("oai-did", "")
+                device_id = self._get_cookie_value_by_name("oai-did")
 
         # fallback: 从 HTML 提取
         if not device_id:
@@ -1949,7 +1949,7 @@ class AuthFlow(AuthPhoneMixin):
     def _extract_workspace_id(self) -> str:
         """从 cookie 中提取 workspace_id"""
         try:
-            auth_session = self.session.cookies.get("oai-client-auth-session", "")
+            auth_session = self._get_cookie_value_by_name("oai-client-auth-session")
             if auth_session:
                 parts = auth_session.split(".")
                 # 兼容不同 cookie 形态：workspace_id 可能在第 1 段或第 2 段，
@@ -2371,7 +2371,7 @@ class AuthFlow(AuthPhoneMixin):
                     with contextlib.suppress(Exception):
                         self.session.get(current, timeout=20, allow_redirects=True)
                     break
-            return bool(self.session.cookies.get("__Secure-next-auth.session-token", ""))
+            return bool(self._extract_session_cookie())
         except Exception as e:
             logger.warning(f"消费 callback 失败: {e}")
             return False
@@ -3128,7 +3128,7 @@ class AuthFlow(AuthPhoneMixin):
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
-                new_session_token = self.session.cookies.get("__Secure-next-auth.session-token", "")
+                new_session_token = self._extract_session_cookie()
                 if new_access_token:
                     access_token = new_access_token
                     logger.info("access_token 刷新成功")
@@ -3155,7 +3155,7 @@ class AuthFlow(AuthPhoneMixin):
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
-                session_token = self.session.cookies.get("__Secure-next-auth.session-token", "")
+                session_token = self._extract_session_cookie()
                 if session_token:
                     logger.info("通过 access_token 获取 session_token 成功")
                 else:

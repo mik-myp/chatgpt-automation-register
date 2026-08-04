@@ -49,6 +49,9 @@ def classify_error(message: str) -> str:
         "curl: (28)",
         "curl: (6)",
         "curl: (7)",
+        "http 429",
+        "too many requests",
+        "rate limit",
         "invalid_state",
     )
     if any(pattern in value for pattern in account_patterns):

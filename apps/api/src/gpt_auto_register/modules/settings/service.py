@@ -13,6 +13,8 @@ from gpt_auto_register.modules.settings.schemas import (
     MailSettings,
     MailSettingsUpdate,
     MaintenanceSettings,
+    PipelineSettings,
+    ProxySettings,
     RegistrationSettings,
     SmsSettings,
     SmsSettingsUpdate,
@@ -53,6 +55,10 @@ class SettingsService:
         maintenance = MaintenanceSettings.model_validate(
             self._value("maintenance", MaintenanceSettings().model_dump())
         )
+        proxy = ProxySettings.model_validate(self._value("proxy", ProxySettings().model_dump()))
+        pipeline = PipelineSettings.model_validate(
+            self._value("pipeline", PipelineSettings().model_dump())
+        )
         sms = SmsSettings(
             **{key: value for key, value in sms_value.items() if key != "api_key"},
             api_key_configured=bool(sms_value.get("api_key")),
@@ -64,6 +70,8 @@ class SettingsService:
         )
         return SystemSettingsResponse(
             registration=registration,
+            proxy=proxy,
+            pipeline=pipeline,
             mail=mail,
             kakao=kakao,
             sms=sms,
@@ -83,6 +91,8 @@ class SettingsService:
             want_refresh_token=True,
         )
         self._set("registration", registration)
+        self._set("proxy", values.proxy.model_dump(), sensitive=True)
+        self._set("pipeline", values.pipeline.model_dump())
         self._set("mail", self._merge_mail(values.mail, current_mail), sensitive=True)
         self._set("kakao", values.kakao.model_dump())
         self._set("sms", self._merge_sms(values.sms, current_sms), sensitive=True)
@@ -97,6 +107,14 @@ class SettingsService:
 
     def registration_internal(self) -> RegistrationSettings:
         return self.get().registration
+
+    def proxy_internal(self) -> ProxySettings:
+        return ProxySettings.model_validate(self._value("proxy", ProxySettings().model_dump()))
+
+    def pipeline_internal(self) -> PipelineSettings:
+        return PipelineSettings.model_validate(
+            self._value("pipeline", PipelineSettings().model_dump())
+        )
 
     def sms_internal(self) -> dict[str, Any]:
         return SmsSettingsUpdate.model_validate(self._value("sms", {})).model_dump()

@@ -8,5 +8,5 @@ def test_health(client: TestClient) -> None:
     assert response.json() == {
         "status": "ok",
         "database": "ok",
-        "version": "0.1.0",
+        "version": "0.3.0",
     }

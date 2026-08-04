@@ -41,8 +41,6 @@ export function formatBeijingDateTime(value: string | null | undefined) {
   return format(value, FULL_DATE_TIME_FORMATTER)
 }
 
-export function formatCompactBeijingDateTime(
-  value: string | null | undefined
-) {
+export function formatCompactBeijingDateTime(value: string | null | undefined) {
   return format(value, COMPACT_DATE_TIME_FORMATTER)
 }

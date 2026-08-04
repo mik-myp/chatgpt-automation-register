@@ -291,10 +291,18 @@ def _security_context(payload: dict[str, Any]) -> tuple[Any, Any]:
     flow.result.email = str(account.get("email") or "")
     flow.result.device_id = str(credential.get("device_id") or "")
     flow.result.password = str(credential.get("password") or "")
+    flow.result.access_token = str(credential.get("access_token") or "")
+    flow.result.session_token = str(credential.get("session_token") or "")
     for part in str(credential.get("cookie_header") or "").split(";"):
         name, separator, value = part.strip().partition("=")
         if separator and name and value:
             flow.session.cookies.set(name, value, domain="chatgpt.com")
+    if flow.result.session_token:
+        flow.session.cookies.set(
+            "__Secure-next-auth.session-token",
+            flow.result.session_token,
+            domain="chatgpt.com",
+        )
     if mail_options.get("source") == "cf_temp":
         from mail_cf import CFTempEmailProvider
 

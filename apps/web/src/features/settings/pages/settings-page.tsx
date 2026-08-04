@@ -14,6 +14,7 @@ import { ExportSettingsTab } from "@/features/settings/components/export-setting
 import { KakaoSettingsTab } from "@/features/settings/components/kakao-settings-tab"
 import { MailSettingsTab } from "@/features/settings/components/mail-settings-tab"
 import { RegistrationSettingsTab } from "@/features/settings/components/registration-settings-tab"
+import { PipelineSettingsTab } from "@/features/settings/components/pipeline-settings-tab"
 import { SettingsFormProvider } from "@/features/settings/components/settings-form-context"
 import { SmsSettingsTab } from "@/features/settings/components/sms-settings-tab"
 import { ApiError } from "@/lib/api-client"
@@ -31,6 +32,11 @@ function editableSettings(
   if (!settings) return null
   return {
     registration: { ...settings.registration },
+    proxy: { ...settings.proxy },
+    pipeline: {
+      ...settings.pipeline,
+      step_order: [...(settings.pipeline.step_order ?? [])],
+    },
     mail: {
       source: settings.mail.source,
       cf_api_url: settings.mail.cf_api_url,
@@ -163,6 +169,9 @@ export function SettingsPage() {
             <TabsTrigger className="shrink-0" value="registration">
               注册
             </TabsTrigger>
+            <TabsTrigger className="shrink-0" value="pipeline">
+              流水线与代理
+            </TabsTrigger>
             <TabsTrigger className="shrink-0" value="mail">
               邮箱
             </TabsTrigger>
@@ -185,6 +194,7 @@ export function SettingsPage() {
 
           <div className="flex min-h-0 flex-1 flex-col">
             <RegistrationSettingsTab />
+            <PipelineSettingsTab />
             <MailSettingsTab />
             <KakaoSettingsTab />
             <SmsSettingsTab />

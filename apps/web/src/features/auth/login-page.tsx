@@ -1,5 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
-import { useNavigate } from "react-router"
+import { useState, type FormEvent } from "react"
 import { LogInIcon } from "lucide-react"
 
 import { AuthPageShell } from "./auth-context"
@@ -10,17 +9,10 @@ import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 
 export function LoginPage() {
-  const navigate = useNavigate()
   const [username, setUsername] = useState("admin")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
-
-  useEffect(() => {
-    void apiRequest<{ initialized: boolean }>("/setup/status").then((status) => {
-      if (!status.initialized) navigate("/setup", { replace: true })
-    })
-  }, [navigate])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -42,8 +34,8 @@ export function LoginPage() {
   return (
     <AuthPageShell
       stage="login"
-      title="登录控制台"
-      description="使用初始化时创建的管理员账号继续。"
+      title="登录"
+      description="使用你的账户继续进入工作台。"
     >
       <form className="space-y-5" onSubmit={submit}>
         <div className="space-y-2">

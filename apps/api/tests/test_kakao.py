@@ -4,91 +4,50 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from gpt_auto_register.db.models.accounts import Credential
 from gpt_auto_register.db.models.kakao import (
-    KakaoCard,
-    KakaoCardBatch,
     KakaoClaimState,
     KakaoEmailClaim,
     KakaoTask,
     KakaoTaskStatus,
 )
 from gpt_auto_register.db.models.pipeline import PipelineItem, PipelineRun
-from gpt_auto_register.db.models.settings import AppSetting
-from gpt_auto_register.modules.kakao.client import KakaoClient
 from gpt_auto_register.modules.kakao.state import claim_extraction
 
 
 @pytest.fixture
 def kakao_task(db_session: Session) -> Generator[KakaoTask, None, None]:
-    db_session.add(
-        AppSetting(
-            key="kakao",
-            value={"base_url": "https://kakao.example.com", "timeout": 30},
-        )
-    )
-    batch = KakaoCardBatch(name="test batch")
-    db_session.add(batch)
-    db_session.flush()
-    card = KakaoCard(batch_id=batch.id, code="KA-TEST", position=0, active=True)
-    db_session.add(card)
-    db_session.flush()
-    db_session.add(Credential(email="alpha@example.com", access_token="token", metadata_json={}))
     task = KakaoTask(
         upstream_job_id="upstream-1",
-        card_id=card.id,
         email="alpha@example.com",
         status=KakaoTaskStatus.QUEUED,
+        upstream_payload={"engine": "local-upi-1", "stage": "queued"},
     )
     db_session.add(task)
     db_session.commit()
     yield task
 
 
-def test_kakao_task_details_returns_local_and_upstream_state(
+def test_kakao_task_details_returns_local_engine_state(
     client: TestClient,
     kakao_task: KakaoTask,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        KakaoClient,
-        "task_detail",
-        lambda _self, job_id: {"job_id": job_id, "status": "queued"},
-    )
-    monkeypatch.setattr(
-        KakaoClient,
-        "kakao_status",
-        lambda _self, job_id: {"job_id": job_id, "payment_status": "waiting"},
-    )
-
     response = client.get(f"/api/kakao/tasks/{kakao_task.id}/details")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["local"]["id"] == kakao_task.id
-    assert payload["task"]["job_id"] == "upstream-1"
-    assert payload["kakao_status"]["payment_status"] == "waiting"
+    assert payload["task"] == {"engine": "local-upi-1", "stage": "queued"}
+    assert payload["kakao_status"]["payment_status"] is None
 
 
 def test_kakao_sync_marks_email_when_payment_link_is_generated(
     client: TestClient,
     db_session: Session,
     kakao_task: KakaoTask,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        KakaoClient,
-        "task_statuses",
-        lambda _self, _job_ids: {
-            "items": [
-                {
-                    "job_id": kakao_task.upstream_job_id,
-                    "status": "done",
-                    "nicepay_checkout_url": "https://pay.example.com/generated",
-                }
-            ]
-        },
-    )
+    kakao_task.status = KakaoTaskStatus.DONE
+    kakao_task.payment_url = "https://pay.example.com/generated"
+    db_session.commit()
 
     response = client.post("/api/kakao/tasks/sync", json={"task_ids": [kakao_task.id]})
 

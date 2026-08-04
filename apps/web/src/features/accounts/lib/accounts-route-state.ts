@@ -21,9 +21,8 @@ export function accountsRouteState(searchParams: URLSearchParams): {
     ? (requestedStatus as AccountStatusType)
     : "all"
   const requestedPage = Number(searchParams.get("page") ?? "1")
-  const page = Number.isInteger(requestedPage) && requestedPage > 0
-    ? requestedPage - 1
-    : 0
+  const page =
+    Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage - 1 : 0
   const requestedPageSize = Number(searchParams.get("page_size") ?? "25")
   const pageSize = PAGE_SIZES.includes(
     requestedPageSize as (typeof PAGE_SIZES)[number]

@@ -33,7 +33,10 @@ export function RuntimeEventLog({
   }, [autoScroll, lastSequence])
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="runtime-event-log">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      data-testid="runtime-event-log"
+    >
       <div className="flex h-11 shrink-0 items-center justify-end gap-2 border-b px-3 text-xs">
         <span className="text-muted-foreground">自动滚动</span>
         <Switch
@@ -48,7 +51,8 @@ export function RuntimeEventLog({
         onScroll={(event) => {
           if (!autoScroll) return
           const viewport = event.currentTarget
-          const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+          const distance =
+            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
           if (distance > 80) setAutoScroll(false)
         }}
         ref={viewportRef}
@@ -79,7 +83,7 @@ export function RuntimeEventLog({
                   }[event.level] ?? event.level
                 }
               />
-              <span className="min-w-0 break-all font-mono font-medium">
+              <span className="min-w-0 font-mono font-medium break-all">
                 {event.event_type}
               </span>
             </div>
@@ -88,19 +92,21 @@ export function RuntimeEventLog({
                 <summary className="cursor-pointer text-muted-foreground">
                   展开异常堆栈
                 </summary>
-                <pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap font-mono leading-5 [overflow-wrap:anywhere]">
+                <pre className="mt-2 max-w-full overflow-x-auto font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
                   {event.message}
                 </pre>
               </details>
             ) : (
-              <div className="max-w-full whitespace-pre-wrap font-mono leading-5 [overflow-wrap:anywhere]">
+              <div className="max-w-full font-mono leading-5 [overflow-wrap:anywhere] whitespace-pre-wrap">
                 {event.message}
               </div>
             )}
           </div>
         ))}
         {!loading && !events.length && (
-          <div className="py-16 text-center text-muted-foreground">暂无运行日志</div>
+          <div className="py-16 text-center text-muted-foreground">
+            暂无运行日志
+          </div>
         )}
       </div>
     </div>

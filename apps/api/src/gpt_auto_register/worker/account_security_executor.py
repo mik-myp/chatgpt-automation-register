@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from sqlalchemy import select
@@ -30,6 +30,7 @@ from gpt_auto_register.worker.executor_support import (
 from gpt_auto_register.worker.executor_support import (
     legacy_call as _legacy_call,
 )
+from gpt_auto_register.worker.proxy_service import ProxyAllocator, ProxyApiError, emit_proxy_attempt
 from gpt_auto_register.worker.runtime_gateway import RuntimeCanceledError
 
 
@@ -52,34 +53,47 @@ class AccountSecurityExecutor:
         succeeded = failed = skipped = 0
         self._start_pipeline()
         self._save_progress(succeeded, failed, skipped)
+        with self._session_factory() as session:
+            settings = SettingsService(session)
+            proxy_settings = settings.proxy_internal()
+            concurrency = settings.pipeline_internal().account_security_email_concurrency
+        try:
+            proxy_batch = ProxyAllocator(
+                proxy_settings,
+                self._session_factory,
+                self.job_id,
+                "account_security",
+            ).allocate(self.emails)
+        except ProxyApiError:
+            proxy_batch = None
+        assignments = proxy_batch.assignments if proxy_batch is not None else {}
+        runnable = [email for email in self.emails if email in assignments]
         for email in self.emails:
-            if not self._job_running():
-                break
-            self._mark_item_running(email)
-            item_error = ""
-            item_skipped = False
-            try:
-                if self._execute_one(email):
-                    succeeded += 1
-                else:
-                    skipped += 1
-                    item_skipped = True
-            except RuntimeCanceledError:
-                break
-            except Exception as error:
-                if self._cancel_event.is_set():
-                    break
+            if email not in assignments:
+                reason = "账号安全步骤代理数量不足，账号未开始执行"
                 failed += 1
-                item_error = str(error)
+                self._save_item_progress(email, reason, skipped=False)
                 _emit(
                     self.job_id,
-                    "account_security_failed",
-                    f"账号安全操作失败 {email}: {error}",
+                    "item_proxy_insufficient",
+                    reason,
                     level="error",
-                    data={"email": email, "action": self.action},
+                    data={"email": email, "step": "account_security"},
                 )
-            self._save_item_progress(email, item_error, skipped=item_skipped)
-            self._save_progress(succeeded, failed, skipped)
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(runnable) or 1)) as executor:
+            futures = {
+                executor.submit(self._execute_email_with_proxies, email, assignments[email]): email
+                for email in runnable
+            }
+            for future in as_completed(futures):
+                outcome = future.result()
+                if outcome == "succeeded":
+                    succeeded += 1
+                elif outcome == "skipped":
+                    skipped += 1
+                elif outcome == "failed":
+                    failed += 1
+                self._save_progress(succeeded, failed, skipped)
         self._finish_pipeline()
         return {
             "succeeded": succeeded,
@@ -217,15 +231,75 @@ class AccountSecurityExecutor:
             run.finished_at = utc_now()
             session.commit()
 
-    def _execute_one(self, email: str) -> bool:
+    def _execute_email_with_proxies(self, email: str, proxies: list[str]) -> str:
+        if not self._job_running():
+            return "canceled"
+        self._mark_item_running(email)
+        last_error = "账号安全操作失败"
+        for attempt, proxy in enumerate(proxies, start=1):
+            started_at = utc_now()
+            try:
+                executed = self._execute_one(email, proxy)
+                emit_proxy_attempt(
+                    self._session_factory,
+                    self.job_id,
+                    email=email,
+                    item_id="",
+                    step="account_security",
+                    attempt=attempt,
+                    proxy=proxy,
+                    started_at=started_at,
+                    succeeded=True,
+                )
+                self._save_item_progress(email, "", skipped=not executed)
+                return "succeeded" if executed else "skipped"
+            except RuntimeCanceledError:
+                return "canceled"
+            except Exception as error:
+                last_error = str(error)
+                emit_proxy_attempt(
+                    self._session_factory,
+                    self.job_id,
+                    email=email,
+                    item_id="",
+                    step="account_security",
+                    attempt=attempt,
+                    proxy=proxy,
+                    started_at=started_at,
+                    succeeded=False,
+                    error=last_error,
+                )
+                if attempt < len(proxies):
+                    _emit(
+                        self.job_id,
+                        "account_security_retry",
+                        f"账号安全操作失败，切换到第 {attempt + 1} 个预分配代理",
+                        level="warning",
+                        data={"email": email, "action": self.action},
+                    )
+        self._save_item_progress(email, last_error, skipped=False)
+        _emit(
+            self.job_id,
+            "account_security_failed",
+            f"账号安全操作失败 {email}: {last_error}",
+            level="error",
+            data={"email": email, "action": self.action},
+        )
+        return "failed"
+
+    def _execute_one(self, email: str, proxy: str) -> bool:
         if self.action != "set_password_and_mfa":
-            self._execute_action(email, self.action)
+            self._execute_action(email, self.action, proxy)
             return True
 
         with self._session_factory() as session:
             credential = session.get(Credential, email)
             if credential is None:
                 raise RuntimeError("ChatGPT 凭据不存在")
+            if not any(
+                (credential.access_token, credential.session_token, credential.cookie_header)
+            ):
+                raise RuntimeError("前置条件不满足：账号缺少可恢复的 ChatGPT 认证态")
             metadata = credential.metadata_json or {}
             security = dict(metadata.get("account_security") or {})
             password = dict(security.get("password") or {})
@@ -262,7 +336,7 @@ class AccountSecurityExecutor:
                 data={"email": email, "action": "set_password"},
             )
         else:
-            self._execute_action(email, "set_password")
+            self._execute_action(email, "set_password", proxy)
         if mfa_complete:
             _emit(
                 self.job_id,
@@ -271,19 +345,19 @@ class AccountSecurityExecutor:
                 data={"email": email, "action": "enable_mfa"},
             )
         else:
-            self._execute_action(email, "enable_mfa")
+            self._execute_action(email, "enable_mfa", proxy)
         return True
 
-    def _execute_action(self, email: str, action: str) -> None:
+    def _execute_action(self, email: str, action: str, proxy: str) -> None:
         try:
-            self._run_action(email, action)
+            self._run_action(email, action, proxy)
         except RuntimeCanceledError:
             raise
         except Exception as error:
             self._record(email, action, "failed", str(error))
             raise
 
-    def _run_action(self, email: str, action: str) -> None:
+    def _run_action(self, email: str, action: str, proxy: str) -> None:
         with self._session_factory() as session:
             account = session.get(OutlookAccount, email)
             credential = session.get(Credential, email)
@@ -295,16 +369,7 @@ class AccountSecurityExecutor:
                 if registration.get("password_mode") == "fixed"
                 else ""
             )
-            proxy_pool = [
-                value.strip()
-                for value in str(registration.get("proxy_pool") or "").splitlines()
-                if value.strip()
-            ]
-            if proxy_pool:
-                digest = hashlib.sha256(email.encode("utf-8")).digest()
-                registration["proxy"] = proxy_pool[
-                    int.from_bytes(digest[:8], "big") % len(proxy_pool)
-                ]
+            registration["proxy"] = proxy
             if action == "enable_mfa":
                 registration.update(password_mode="none", enable_authenticator_mfa=True)
             elif registration.get("password_mode") == "none":
@@ -313,6 +378,8 @@ class AccountSecurityExecutor:
             account_data = _account_payload(account)
             credential_data = {
                 "password": credential.password or configured_password,
+                "access_token": credential.access_token or "",
+                "session_token": credential.session_token or "",
                 "device_id": credential.device_id or "",
                 "cookie_header": credential.cookie_header or "",
             }

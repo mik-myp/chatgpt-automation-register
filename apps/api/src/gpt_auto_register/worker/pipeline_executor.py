@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,7 +8,6 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import (
     AccountStatus,
@@ -17,10 +15,6 @@ from gpt_auto_register.db.models.accounts import (
     OutlookAccount,
     RegistrationRun,
     RunStatus,
-)
-from gpt_auto_register.db.models.kakao import (
-    KakaoCard,
-    PipelineCardAllocation,
 )
 from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
@@ -31,7 +25,6 @@ from gpt_auto_register.db.models.pipeline import (
 )
 from gpt_auto_register.db.session import SessionLocal
 from gpt_auto_register.modules.accounts.repository import AccountRepository
-from gpt_auto_register.modules.cards.allocator import CardAllocator, card_allocation_guard
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.executor_support import (
     account_payload as _account_payload,
@@ -45,11 +38,21 @@ from gpt_auto_register.worker.executor_support import (
 from gpt_auto_register.worker.executor_support import (
     legacy_call as _legacy_call,
 )
-from gpt_auto_register.worker.pipeline_kakao_executor import KakaoPipelineExecutorMixin
+from gpt_auto_register.worker.pipeline_kakao_executor import (
+    KakaoPipelineExecutorMixin,
+    pair_kakao_proxy_assignments,
+)
+from gpt_auto_register.worker.proxy_service import (
+    ProxyAllocator,
+    ProxyApiError,
+    emit_proxy_attempt,
+)
 from gpt_auto_register.worker.runtime_gateway import RuntimeCanceledError
 
 
 class PipelineExecutor(KakaoPipelineExecutorMixin):
+    NETWORK_CIRCUIT_BREAKER_THRESHOLD = 5
+
     def __init__(
         self,
         job_id: str,
@@ -81,6 +84,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             sms = settings_service.sms_internal()
             mail = settings_service.mail_internal()
             export = settings_service.export_internal()
+            proxy_settings = settings_service.proxy_internal()
             item_query = select(PipelineItem.id).where(PipelineItem.pipeline_run_id == self.run_id)
             if self.item_ids is not None:
                 item_query = item_query.where(PipelineItem.id.in_(self.item_ids))
@@ -91,10 +95,54 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             return self._execute_kakao_pipeline(item_ids)
 
         _emit(self.job_id, "pipeline_started", "流水线开始执行")
-        card_codes = self._allocate_cards(item_ids) if run.kakao_enabled else {}
+        kakao_enabled = run.kakao_enabled
+        try:
+            proxy_batch = ProxyAllocator(
+                proxy_settings,
+                self._session_factory,
+                self.job_id,
+                "registration",
+            ).allocate(item_ids)
+        except ProxyApiError:
+            proxy_batch = None
+        proxy_assignments = proxy_batch.assignments if proxy_batch is not None else {}
+        kakao_proxy_assignments: dict[str, list[tuple[str, str]]] = {}
+        kakao_proxy_failures: dict[str, str] = {}
+        if kakao_enabled:
+            try:
+                kakao_allocator = ProxyAllocator(
+                    proxy_settings,
+                    self._session_factory,
+                    self.job_id,
+                    "kakao",
+                )
+                kr_batch = kakao_allocator.allocate(item_ids, region="KR")
+                vn_batch = kakao_allocator.allocate(item_ids, region="VN")
+                kakao_proxy_assignments, kakao_proxy_failures = pair_kakao_proxy_assignments(
+                    item_ids,
+                    kr_batch.assignments,
+                    vn_batch.assignments,
+                )
+            except ProxyApiError:
+                pass
+        runnable_item_ids = [item_id for item_id in item_ids if item_id in proxy_assignments]
+        for item_id in item_ids:
+            if item_id not in proxy_assignments:
+                self._save_proxy_shortage(item_id, "注册步骤代理数量不足，账号未开始执行")
+            elif kakao_enabled and item_id not in kakao_proxy_assignments:
+                _emit(
+                    self.job_id,
+                    "kakao_proxy_allocation_failed",
+                    kakao_proxy_failures.get(item_id, "Kakao KR/VN 代理对数量不足"),
+                    level="error",
+                    data={"item_id": item_id, "step": "kakao"},
+                )
         concurrency = max(1, min(50, int(registration.get("concurrency") or 10)))
         success = failed = 0
-        with ThreadPoolExecutor(max_workers=min(concurrency, len(item_ids) or 1)) as executor:
+        failed += len(item_ids) - len(runnable_item_ids)
+        with ThreadPoolExecutor(
+            max_workers=min(concurrency, len(runnable_item_ids) or 1)
+        ) as executor:
             futures = {
                 executor.submit(
                     self._execute_item,
@@ -103,9 +151,11 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                     sms,
                     mail,
                     export,
-                    card_codes.get(item_id),
+                    kakao_enabled,
+                    proxy_assignments[item_id],
+                    kakao_proxy_assignments.get(item_id, []),
                 ): item_id
-                for item_id in item_ids
+                for item_id in runnable_item_ids
             }
             for future in as_completed(futures):
                 try:
@@ -162,91 +212,6 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         )
         return {"status": final_status, "registered": success, "failed": failed}
 
-    def _allocate_cards(self, item_ids: list[str]) -> dict[str, str]:
-        with card_allocation_guard(), self._session_factory() as session:
-            requested_items = list(
-                session.scalars(select(PipelineItem).where(PipelineItem.id.in_(item_ids)))
-            )
-            run_items = list(
-                session.scalars(
-                    select(PipelineItem).where(PipelineItem.pipeline_run_id == self.run_id)
-                )
-            )
-            reserved_counts = {
-                card.code: allocation.allocated_count
-                for allocation, card in session.execute(
-                    select(PipelineCardAllocation, KakaoCard)
-                    .join(KakaoCard, KakaoCard.id == PipelineCardAllocation.card_id)
-                    .where(PipelineCardAllocation.pipeline_run_id == self.run_id)
-                )
-            }
-            snapshot_counts: dict[str, int] = {}
-            for item in run_items:
-                if item.card_code_snapshot:
-                    snapshot_counts[item.card_code_snapshot] = (
-                        snapshot_counts.get(item.card_code_snapshot, 0) + 1
-                    )
-            if (
-                len(requested_items) == len(item_ids)
-                and all(item.card_code_snapshot for item in requested_items)
-                and all(
-                    reserved_counts.get(code, 0) >= count for code, count in snapshot_counts.items()
-                )
-            ):
-                reserved_mapping = {
-                    item.id: str(item.card_code_snapshot) for item in requested_items
-                }
-                session.close()
-                _emit(
-                    self.job_id,
-                    "cards_allocated",
-                    f"使用创建流水线时预留的 {len(reserved_mapping)} 个卡密名额",
-                )
-                return reserved_mapping
-            slots, _ = CardAllocator(session).select(len(item_ids))
-            cards = {
-                card.code: card
-                for card in session.scalars(
-                    select(KakaoCard).where(
-                        KakaoCard.code_fingerprint.in_(
-                            [secret_fingerprint(code) for code in set(slots)]
-                        )
-                    )
-                )
-            }
-            counts: dict[str, int] = {}
-            mapping: dict[str, str] = {}
-            for item_id, code in zip(item_ids, slots, strict=True):
-                mapping[item_id] = code
-                counts[code] = counts.get(code, 0) + 1
-                allocated_item = session.get(PipelineItem, item_id)
-                if allocated_item is not None:
-                    allocated_item.card_code_snapshot = code
-            for code, count in counts.items():
-                card = cards[code]
-                allocation = session.get(
-                    PipelineCardAllocation,
-                    (self.run_id, card.id),
-                )
-                if allocation is None:
-                    allocation = PipelineCardAllocation(
-                        pipeline_run_id=self.run_id,
-                        card_id=card.id,
-                        allocated_count=0,
-                        created_count=0,
-                        duplicate_count=0,
-                        failed_count=0,
-                    )
-                    session.add(allocation)
-                allocation.allocated_count = (allocation.allocated_count or 0) + count
-            session.commit()
-        _emit(
-            self.job_id,
-            "cards_allocated",
-            f"已实时分配 {len(item_ids)} 个卡密名额",
-        )
-        return mapping
-
     def _wait_until_runnable(self) -> bool:
         while True:
             if self._cancel_event.is_set():
@@ -266,11 +231,13 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         sms: dict[str, Any],
         mail: dict[str, Any],
         export: dict[str, Any],
-        card_code: str | None,
+        kakao_enabled: bool,
+        proxies: list[str],
+        kakao_proxies: list[tuple[str, str]],
     ) -> bool:
         if not self._wait_until_runnable():
             return False
-        resumed = self._resume_saved_registration(item_id, export, card_code)
+        resumed = self._resume_saved_registration(item_id, export, kakao_enabled, kakao_proxies)
         if resumed is not None:
             return resumed
         with self._session_factory() as session:
@@ -295,16 +262,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                 item.account_email = account.email
                 item.mail_url_snapshot = account.mail_url
             item.status = PipelineItemStatus.REGISTERING
-            proxy = str(registration.get("proxy") or "").strip()
-            if not proxy:
-                pool = [
-                    line.strip()
-                    for line in str(registration.get("proxy_pool") or "").splitlines()
-                    if line.strip() and not line.lstrip().startswith("#")
-                ]
-                if pool:
-                    proxy = secrets.choice(pool)
-            item_config = {**registration, "proxy": proxy}
+            item_config = {**registration, "proxy": proxies[0]}
             registration_run = RegistrationRun(
                 email=account.email if account is not None else f"cf-pending-{item.id}",
                 status=RunStatus.RUNNING,
@@ -336,30 +294,52 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         )
         try:
             result: dict[str, Any] = {}
-            for attempt in range(3):
-                result = _legacy_call(
-                    {
-                        "action": "register",
-                        "account": account_data,
-                        "registration": item_config,
-                        "sms": sms,
-                        "mail": mail,
-                    },
-                    job_id=self.job_id,
-                    cancel_check=self._cancel_event.is_set,
+            last_error = "注册失败"
+            for attempt, proxy in enumerate(proxies, start=1):
+                started_at = utc_now()
+                item_config = {**registration, "proxy": proxy}
+                try:
+                    result = _legacy_call(
+                        {
+                            "action": "register",
+                            "account": account_data,
+                            "registration": item_config,
+                            "sms": sms,
+                            "mail": mail,
+                        },
+                        job_id=self.job_id,
+                        cancel_check=self._cancel_event.is_set,
+                    )
+                    last_error = str(result.get("error") or "注册失败")
+                    succeeded = bool(result.get("ok"))
+                except RuntimeCanceledError:
+                    raise
+                except Exception as error:
+                    last_error = str(error)
+                    result = {}
+                    succeeded = False
+                emit_proxy_attempt(
+                    self._session_factory,
+                    self.job_id,
+                    email=str(account_data["email"]),
+                    item_id=item_id,
+                    step="registration",
+                    attempt=attempt,
+                    proxy=proxy,
+                    started_at=started_at,
+                    succeeded=succeeded,
+                    error="" if succeeded else last_error,
                 )
-                error_message = str(result.get("error") or "")
-                if result.get("ok") or "invalid_state" not in error_message.lower():
+                if succeeded:
                     break
-                if attempt < 2:
+                if attempt < len(proxies):
                     _emit(
                         self.job_id,
                         "registration_retry",
-                        f"注册会话失效，正在使用全新会话重试（{attempt + 1}/2）",
+                        f"注册失败，切换到第 {attempt + 1} 个预分配代理",
                         level="warning",
                         data={"item_id": item_id, "email": account_data["email"]},
                     )
-                    time.sleep(attempt + 1)
             if not result.get("ok"):
                 trace = str(result.get("traceback") or "").strip()
                 if trace:
@@ -370,7 +350,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                         level="error",
                         data={"item_id": item_id, "email": account_data["email"]},
                     )
-                raise RuntimeError(str(result.get("error") or "注册失败"))
+                raise RuntimeError(last_error)
             credential = dict(result.get("credential") or {})
             self._save_registration_success(item_id, registration_run.id, credential)
             with self._failure_lock:
@@ -414,15 +394,17 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             item_id,
             credential,
             export,
-            card_code,
+            kakao_enabled,
             account_data["email"],
+            kakao_proxies,
         )
 
     def _resume_saved_registration(
         self,
         item_id: str,
         export: dict[str, Any],
-        card_code: str | None,
+        kakao_enabled: bool,
+        kakao_proxies: list[tuple[str, str]],
     ) -> bool | None:
         with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
@@ -467,8 +449,9 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             item_id,
             value,
             export,
-            card_code,
+            kakao_enabled,
             item.account_email,
+            kakao_proxies,
         )
 
     def _complete_post_registration(
@@ -476,21 +459,59 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
         item_id: str,
         credential: dict[str, Any],
         export: dict[str, Any],
-        card_code: str | None,
+        kakao_enabled: bool,
         email: str,
+        kakao_proxies: list[tuple[str, str]],
     ) -> bool:
         if not self._wait_until_runnable():
             return True
         try:
             self._run_export(credential, export)
-            if card_code:
+            if kakao_enabled:
+                if not kakao_proxies:
+                    raise RuntimeError("Kakao 步骤代理数量不足，账号未开始执行")
                 if not self._wait_until_runnable():
                     return True
-                try:
-                    self._run_kakao(item_id, credential, card_code)
-                except Exception:
-                    self._record_kakao_failure(card_code)
-                    raise
+                last_error: Exception | None = None
+                for attempt, (kr_proxy, vn_proxy) in enumerate(kakao_proxies, start=1):
+                    started_at = utc_now()
+                    proxy_label = f"KR={kr_proxy} | VN={vn_proxy}"
+                    try:
+                        self._run_kakao(
+                            item_id,
+                            credential,
+                            kr_proxy=kr_proxy,
+                            vn_proxy=vn_proxy,
+                        )
+                        emit_proxy_attempt(
+                            self._session_factory,
+                            self.job_id,
+                            email=email,
+                            item_id=item_id,
+                            step="kakao",
+                            attempt=attempt,
+                            proxy=proxy_label,
+                            started_at=started_at,
+                            succeeded=True,
+                        )
+                        last_error = None
+                        break
+                    except Exception as error:
+                        last_error = error
+                        emit_proxy_attempt(
+                            self._session_factory,
+                            self.job_id,
+                            email=email,
+                            item_id=item_id,
+                            step="kakao",
+                            attempt=attempt,
+                            proxy=proxy_label,
+                            started_at=started_at,
+                            succeeded=False,
+                            error=str(error),
+                        )
+                if last_error is not None:
+                    raise last_error
             else:
                 self._mark_item_completed(item_id)
         except Exception as error:
@@ -504,23 +525,27 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
             )
         return True
 
-    def _record_kakao_failure(self, card_code: str) -> None:
+    def _save_proxy_shortage(self, item_id: str, reason: str) -> None:
         with self._session_factory() as session:
-            card = session.scalar(
-                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
-            )
-            if card is None:
+            item = session.get(PipelineItem, item_id)
+            if item is None:
                 return
-            allocation = session.get(PipelineCardAllocation, (self.run_id, card.id))
-            if allocation is not None:
-                allocation.failed_count = (allocation.failed_count or 0) + 1
+            item.status = PipelineItemStatus.FAILED
+            item.error = reason
             session.commit()
+        _emit(
+            self.job_id,
+            "item_proxy_insufficient",
+            reason,
+            level="error",
+            data={"item_id": item_id, "step": "registration"},
+        )
 
     def _record_network_failure(self) -> None:
         with self._failure_lock:
             self._consecutive_network_failures += 1
             failures = self._consecutive_network_failures
-        if failures < 3:
+        if failures < self.NETWORK_CIRCUIT_BREAKER_THRESHOLD:
             return
         with self._session_factory() as session:
             run = session.get(PipelineRun, self.run_id)
@@ -530,7 +555,7 @@ class PipelineExecutor(KakaoPipelineExecutorMixin):
                 _emit(
                     self.job_id,
                     "circuit_breaker_opened",
-                    "连续 5 次网络错误，流水线已自动暂停",
+                    f"连续 {self.NETWORK_CIRCUIT_BREAKER_THRESHOLD} 次网络错误，流水线已自动暂停",
                     level="warning",
                     data={"consecutive_network_failures": failures},
                 )

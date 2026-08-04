@@ -45,9 +45,9 @@ class PipelineRunCreateRequest(BaseModel):
     target_count: int = Field(default=1, ge=1, le=10000)
     concurrency: int | None = Field(default=None, ge=1, le=50)
     otp_timeout: int | None = Field(default=None, ge=1, le=300)
-    proxy: str | None = None
-    proxy_pool: str | None = None
-    kakao_enabled: bool = True
+    # Retained for older clients. New registration runs never inline Kakao because
+    # Kakao has its own ordering and task-concurrency controls.
+    kakao_enabled: bool = False
 
 
 class PipelineItemSummary(BaseModel):

@@ -65,11 +65,11 @@ class KakaoClient:
         except (httpx.HTTPError, ValueError) as error:
             raise KakaoApiError(f"Kakao API 连接失败: {error}") from error
 
-    def check_eligibility(self, access_tokens: list[str]) -> object:
+    def check_eligibility(self, access_tokens: list[str], *, proxy: str = "") -> object:
         return self.request(
             "POST",
             "api/promo-coupon/check",
-            json_body={"accessTokens": access_tokens},
+            json_body={"accessTokens": access_tokens, "proxy": proxy},
         )
 
     def create_tasks(
@@ -79,6 +79,7 @@ class KakaoClient:
         access_tokens: list[str],
         plan_type: str,
         promo_code: str,
+        proxy: str = "",
     ) -> object:
         return self.request(
             "POST",
@@ -88,6 +89,7 @@ class KakaoClient:
                 "accessTokens": access_tokens,
                 "plan_type": plan_type,
                 "promo_code": promo_code,
+                "proxy": proxy,
             },
         )
 

@@ -7,8 +7,15 @@ import axios, {
 import { env } from "./env"
 
 type ApiErrorPayload = {
-  detail?: string
+  detail?: string | ApiValidationIssue[]
   message?: string
+}
+
+type ApiValidationIssue = {
+  type?: string
+  loc?: Array<string | number>
+  msg?: string
+  ctx?: { min_length?: number }
 }
 
 export class ApiError extends Error {
@@ -28,6 +35,25 @@ function errorMessage(status: number, payload: unknown) {
   if (payload && typeof payload === "object") {
     const value = payload as ApiErrorPayload
     if (typeof value.detail === "string" && value.detail) return value.detail
+    if (Array.isArray(value.detail) && value.detail.length > 0) {
+      const issue = value.detail[0]
+      const field = String(issue.loc?.at(-1) ?? "")
+      const labels: Record<string, string> = {
+        token: "初始化令牌",
+        username: "用户名",
+        password: "密码",
+        current_password: "当前密码",
+        new_password: "新密码",
+      }
+      const label = labels[field] ?? "输入内容"
+      if (issue.type === "string_too_short") {
+        return `${label}至少需要 ${issue.ctx?.min_length ?? "规定"} 位`
+      }
+      if (issue.type === "string_pattern_mismatch") {
+        return `${label}只能包含字母、数字、点、短横线和下划线`
+      }
+      if (issue.msg) return `${label}：${issue.msg}`
+    }
     if (typeof value.message === "string" && value.message) return value.message
   }
   if (!status) return "无法连接本地 API 服务"
@@ -74,7 +100,7 @@ apiClient.interceptors.response.use(
         !String(error.config?.url ?? "").includes("/auth/login")
       ) {
         setCsrfToken("")
-        if (window.location.pathname !== "/login")
+        if (!["/login", "/setup"].includes(window.location.pathname))
           window.location.assign("/login")
       }
       return Promise.reject(toApiError(error))
@@ -85,9 +111,16 @@ apiClient.interceptors.response.use(
 
 function normalizeUrl(url: string | undefined) {
   if (!url) return url
-  const baseUrl = env.VITE_API_BASE_URL.replace(/\/$/, "")
-  if (baseUrl && url.startsWith(`${baseUrl}/`)) {
-    return url.slice(baseUrl.length)
+  const baseUrl = String(apiClient.defaults.baseURL ?? env.VITE_API_BASE_URL)
+  let basePath = baseUrl
+  try {
+    basePath = new URL(baseUrl, window.location.origin).pathname
+  } catch {
+    // Axios will report malformed base URLs; normalization can safely skip them.
+  }
+  basePath = basePath.replace(/\/$/, "")
+  if (basePath && basePath !== "/" && url.startsWith(`${basePath}/`)) {
+    return url.slice(basePath.length)
   }
   return url
 }

@@ -17,7 +17,7 @@ class SetupPreflightResponse(BaseModel):
 class SetupInitializeRequest(BaseModel):
     token: str = Field(min_length=32, max_length=256)
     username: str = Field(min_length=3, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(min_length=12, max_length=1024)
+    password: str = Field(min_length=6, max_length=1024)
 
 
 class SetupInitializeResponse(SessionResponse):

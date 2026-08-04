@@ -10,6 +10,7 @@ from gpt_auto_register.db.models.common import TimestampMixin, enum_type, new_id
 
 class UserRole(StrEnum):
     ADMIN = "admin"
+    USER = "user"
 
 
 class User(TimestampMixin, Base):

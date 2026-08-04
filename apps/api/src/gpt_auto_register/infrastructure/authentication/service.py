@@ -13,7 +13,7 @@ from gpt_auto_register.core.security import (
     verify_password,
 )
 from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.db.models.auth import LoginAttempt, User, UserSession
+from gpt_auto_register.db.models.auth import LoginAttempt, User, UserRole, UserSession
 
 SESSION_COOKIE_NAME = "gpt_auto_session"
 
@@ -35,10 +35,17 @@ class AuthenticationService:
         self.session = session
         self.settings = settings
 
-    def create_user(self, username: str, password: str) -> User:
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        role: UserRole = UserRole.ADMIN,
+    ) -> User:
         user = User(
             username=username.strip().lower(),
             password_hash=hash_password(password),
+            role=role,
             password_changed_at=utc_now(),
         )
         self.session.add(user)

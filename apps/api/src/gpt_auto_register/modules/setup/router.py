@@ -8,7 +8,7 @@ from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.core.config import get_settings
 from gpt_auto_register.core.security import tokens_equal
 from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.db.models.auth import SetupState
+from gpt_auto_register.db.models.auth import SetupState, UserRole
 from gpt_auto_register.infrastructure.authentication import AuthenticationService
 from gpt_auto_register.modules.auth.router import set_session_cookie
 from gpt_auto_register.modules.setup.schemas import (
@@ -78,7 +78,7 @@ def initialize(
         if state.initialized:
             raise HTTPException(status.HTTP_409_CONFLICT, "系统已经初始化")
         service = AuthenticationService(db, get_settings())
-        user = service.create_user(payload.username, payload.password)
+        user = service.create_user(payload.username, payload.password, role=UserRole.ADMIN)
         state.initialized = True
         state.initialized_at = now
         state.administrator_id = user.id

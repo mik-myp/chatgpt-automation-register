@@ -1,12 +1,10 @@
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Response, status
-from sqlalchemy import select
 
 from gpt_auto_register.api.auth_dependencies import CurrentSession, require_reauthentication
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.core.config import get_settings as get_app_settings
 from gpt_auto_register.db.base import utc_now
-from gpt_auto_register.db.models.kakao import KakaoCard
-from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient
 from gpt_auto_register.modules.settings.backup import export_bundle, import_bundle, preview_bundle
 from gpt_auto_register.modules.settings.diagnostics import build_diagnostic_bundle
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage, storage_stats
@@ -26,6 +24,7 @@ from gpt_auto_register.modules.settings.schemas import (
     SystemSettingsUpdate,
 )
 from gpt_auto_register.modules.settings.service import SettingsService
+from gpt_auto_register.worker.proxy_service import _proxy_candidates, _request_url, normalize_proxy
 from gpt_auto_register.worker.runtime_gateway import runtime_gateway
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -39,6 +38,29 @@ def get_settings(db: DatabaseSession) -> SystemSettingsResponse:
 @router.put("", response_model=SystemSettingsResponse)
 def update_settings(request: SystemSettingsUpdate, db: DatabaseSession) -> SystemSettingsResponse:
     return SettingsService(db).update(request)
+
+
+@router.post("/proxy/test", response_model=ConnectionTestResponse)
+def test_proxy_api(db: DatabaseSession) -> ConnectionTestResponse:
+    settings = SettingsService(db).proxy_internal()
+    try:
+        response = httpx.get(
+            _request_url(settings.api_url, 1),
+            headers={"Accept": "application/json, text/plain"},
+            timeout=settings.request_timeout,
+        )
+        response.raise_for_status()
+        try:
+            payload: object = response.json()
+        except ValueError:
+            payload = response.text
+        candidates = _proxy_candidates(payload)
+        if not candidates:
+            raise ValueError("代理 API 未返回代理")
+        normalized = normalize_proxy(candidates[0])
+    except (httpx.HTTPError, ValueError, RuntimeError) as error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"代理 API 测试失败: {error}") from error
+    return ConnectionTestResponse(message=f"代理 API 可用，示例代理 {normalized}")
 
 
 @router.get("/data/export", response_model=BackupBundle)
@@ -168,20 +190,30 @@ def test_export_settings(target: str, db: DatabaseSession) -> ConnectionTestResp
 
 @router.post("/kakao/test", response_model=ConnectionTestResponse)
 def test_kakao_settings(db: DatabaseSession) -> ConnectionTestResponse:
-    settings = SettingsService(db).kakao_internal()
-    card = db.scalar(
-        select(KakaoCard).where(KakaoCard.active.is_(True)).order_by(KakaoCard.created_at)
-    )
-    if not settings.base_url:
-        raise HTTPException(status.HTTP_409_CONFLICT, "请先配置 Kakao Base URL")
-    if card is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "请先导入并启用至少一个卡密")
+    proxy = SettingsService(db).proxy_internal()
+    if not proxy.api_url:
+        raise HTTPException(status.HTTP_409_CONFLICT, "请先配置代理 API 链接地址")
     try:
-        KakaoClient(settings.base_url, settings.timeout).list_tasks(
-            card.code,
-            page=1,
-            page_size=1,
-        )
-    except (KakaoApiError, ValueError) as error:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
-    return ConnectionTestResponse(message="Kakao 连接成功，卡密可用于查询任务")
+        values: list[str] = []
+        for region in ("KR", "VN"):
+            response = httpx.get(
+                _request_url(proxy.api_url, 1, region=region),
+                headers={"Accept": "application/json, text/plain"},
+                timeout=proxy.request_timeout,
+            )
+            response.raise_for_status()
+            try:
+                payload: object = response.json()
+            except ValueError:
+                payload = response.text
+            candidates = _proxy_candidates(payload)
+            if not candidates:
+                raise ValueError(f"{region} 代理 API 未返回代理")
+            values.append(normalize_proxy(candidates[0]))
+        if values[0] == values[1]:
+            raise ValueError("KR/VN 代理 API 返回了相同代理")
+    except (httpx.HTTPError, ValueError, RuntimeError) as error:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"Kakao 本地引擎测试失败: {error}"
+        ) from error
+    return ConnectionTestResponse(message="Kakao 本地引擎可用，KR/VN 代理均返回有效地址")

@@ -1,5 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
-import { useNavigate } from "react-router"
+import { useState, type FormEvent } from "react"
 import { ShieldCheckIcon } from "lucide-react"
 
 import { AuthPageShell } from "./auth-context"
@@ -10,7 +9,6 @@ import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 
 export function SetupPage() {
-  const navigate = useNavigate()
   const [token, setToken] = useState("")
   const [username, setUsername] = useState("admin")
   const [password, setPassword] = useState("")
@@ -18,14 +16,20 @@ export function SetupPage() {
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
 
-  useEffect(() => {
-    void apiRequest<{ initialized: boolean }>("/setup/status").then((status) => {
-      if (status.initialized) navigate("/login", { replace: true })
-    })
-  }, [navigate])
-
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (token.trim().length < 32) {
+      setError("初始化令牌至少需要 32 位")
+      return
+    }
+    if (!/^[A-Za-z0-9_.-]{3,128}$/.test(username)) {
+      setError("用户名至少 3 位，且只能包含字母、数字、点、短横线和下划线")
+      return
+    }
+    if (password.length < 6) {
+      setError("管理员密码至少需要 6 位")
+      return
+    }
     if (password !== confirm) {
       setError("两次输入的密码不一致")
       return
@@ -81,6 +85,7 @@ export function SetupPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
             />
+            <p className="text-xs text-muted-foreground">至少 6 位</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="setup-confirm">确认密码</Label>

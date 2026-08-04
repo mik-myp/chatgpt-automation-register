@@ -21,7 +21,7 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineStatus,
 )
 from gpt_auto_register.db.models.settings import AppSetting
-from gpt_auto_register.modules.cards.allocator import CardAllocationError, CardAllocator
+from gpt_auto_register.modules.cards.allocator import CardAllocator
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
 from gpt_auto_register.modules.settings.schemas import DeliveryCopySettings
 
@@ -149,25 +149,22 @@ def test_single_pipeline_preserves_requested_email(
     assert detail_response.json()["items"][0]["account_email"] == "selected@example.com"
 
 
-def test_kakao_pipeline_creation_rejects_insufficient_capacity(
+def test_registration_does_not_inline_kakao_or_check_legacy_card_capacity(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def reject_capacity(_allocator: object, target_count: int) -> object:
-        raise CardAllocationError(f"卡密实时剩余次数只有 1，无法分配 {target_count} 个任务")
+    def unexpected_call(_allocator: object, _target_count: int) -> object:
+        raise AssertionError("本地 Kakao 引擎不得查询第三方卡密容量")
 
-    monkeypatch.setattr(
-        "gpt_auto_register.modules.pipelines.router.CardAllocator.select",
-        reject_capacity,
-    )
+    monkeypatch.setattr(CardAllocator, "select", unexpected_call)
 
     response = client.post(
         "/api/pipelines/runs",
         json={"mode": "batch", "target_count": 3, "kakao_enabled": True},
     )
 
-    assert response.status_code == 409
-    assert "无法分配 3 个任务" in response.json()["detail"]
+    assert response.status_code == 201
+    assert response.json()["kakao_enabled"] is False
 
 
 def test_non_kakao_pipeline_does_not_check_card_capacity(
@@ -177,10 +174,7 @@ def test_non_kakao_pipeline_does_not_check_card_capacity(
     def unexpected_call(_allocator: object, _target_count: int) -> object:
         raise AssertionError("Kakao disabled pipeline must not query card capacity")
 
-    monkeypatch.setattr(
-        "gpt_auto_register.modules.pipelines.router.CardAllocator.select",
-        unexpected_call,
-    )
+    monkeypatch.setattr(CardAllocator, "select", unexpected_call)
 
     response = client.post(
         "/api/pipelines/runs",
@@ -394,7 +388,11 @@ def test_create_global_security_pipeline_without_source_run(
     db_session.add_all(
         [
             OutlookAccount(email="selected@example.com"),
-            Credential(email="selected@example.com", metadata_json={}),
+            Credential(
+                email="selected@example.com",
+                access_token="access-token",
+                metadata_json={},
+            ),
         ]
     )
     db_session.commit()
@@ -415,7 +413,7 @@ def test_create_global_security_pipeline_without_source_run(
     assert items[0]["mfa_status"] == "not_enabled"
 
 
-def test_create_global_kakao_pipeline_reserves_cards(
+def test_create_global_kakao_pipeline_does_not_reserve_cards(
     client: TestClient,
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -435,7 +433,9 @@ def test_create_global_kakao_pipeline_reserves_cards(
     monkeypatch.setattr(
         CardAllocator,
         "select",
-        lambda _self, count: ([card.code] * count, []),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("本地 Kakao 任务不得预留第三方卡密")
+        ),
     )
 
     response = client.post(
@@ -451,11 +451,11 @@ def test_create_global_kakao_pipeline_reserves_cards(
     items = client.get(f"/api/pipelines/runs/{run['id']}/items").json()["items"]
     cards = client.get(f"/api/pipelines/runs/{run['id']}/cards").json()["items"]
     assert items[0]["account_email"] == email
-    assert items[0]["card_code_snapshot"] == card.code
-    assert cards[0]["allocated_count"] == 1
+    assert items[0]["card_code_snapshot"] is None
+    assert cards == []
 
 
-def test_create_global_kakao_pipeline_rejects_insufficient_capacity(
+def test_create_global_kakao_pipeline_ignores_legacy_card_capacity(
     client: TestClient,
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -469,8 +469,8 @@ def test_create_global_kakao_pipeline_rejects_insufficient_capacity(
     )
     db_session.commit()
 
-    def reject_capacity(_allocator: object, target_count: int) -> object:
-        raise CardAllocationError(f"卡密实时剩余次数只有 0，无法分配 {target_count} 个任务")
+    def reject_capacity(_allocator: object, _target_count: int) -> object:
+        raise AssertionError("不应调用旧卡密容量接口")
 
     monkeypatch.setattr(CardAllocator, "select", reject_capacity)
 
@@ -479,8 +479,7 @@ def test_create_global_kakao_pipeline_rejects_insufficient_capacity(
         json={"emails": ["capacity@example.com"]},
     )
 
-    assert response.status_code == 409
-    assert "无法分配 1 个任务" in response.json()["detail"]
+    assert response.status_code == 201
 
 
 def test_kakao_candidates_exclude_accounts_in_active_kakao_runs(

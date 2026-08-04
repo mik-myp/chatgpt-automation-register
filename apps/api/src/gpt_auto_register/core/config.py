@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "GPT Auto Register"
-    app_version: str = "0.2.1"
+    app_version: str = "0.3.0"
     environment: Literal["development", "test", "production"] = "development"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)

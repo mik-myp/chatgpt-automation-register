@@ -49,20 +49,38 @@ function renderWithClient(node: React.ReactNode) {
 }
 
 describe("CreateRegistrationDialog", () => {
-  it("disables creation when Kakao capacity is insufficient", async () => {
+  it("creates a registration-only task without legacy card lookup", async () => {
     const user = userEvent.setup()
     mock.onGet("/api/settings").reply(200, { registration: {} })
-    mock.onPost("/api/kakao/cards/select").reply(409, {
-      detail: "卡密实时剩余次数只有 3，无法分配 20 个任务",
+    mock.onPost(/\/pipelines\/runs$/).reply(201, {
+      id: "local-kakao-run",
     })
     renderWithClient(<CreateRegistrationDialog defaultEmail="" />)
 
     await user.click(screen.getByRole("button", { name: "新建注册" }))
+    const create = await screen.findByRole("button", { name: "创建" })
 
+    expect(create).toBeEnabled()
+    await user.click(create)
+    await waitFor(() =>
+      expect(
+        mock.history.post.some((request) =>
+          request.url?.endsWith("/pipelines/runs")
+        )
+      ).toBe(true)
+    )
+    const request = mock.history.post.find((value) =>
+      value.url?.endsWith("/pipelines/runs")
+    )
+    expect(JSON.parse(request?.data as string)).toMatchObject({
+      kakao_enabled: false,
+    })
+    expect(screen.queryByText("创建 Kakao Pay 任务")).not.toBeInTheDocument()
     expect(
-      await screen.findByText("卡密实时剩余次数只有 3，无法分配 20 个任务")
-    ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "创建" })).toBeDisabled()
+      mock.history.post.some((request) =>
+        request.url?.endsWith("/kakao/cards/select")
+      )
+    ).toBe(false)
   })
 })
 
@@ -148,7 +166,7 @@ describe("CreateSecurityPipelineDialog", () => {
 })
 
 describe("CreateKakaoPipelineDialog", () => {
-  it("checks card capacity before creating a Kakao pipeline", async () => {
+  it("creates a local Kakao pipeline without legacy card lookup", async () => {
     const user = userEvent.setup()
     mock.onGet("/api/pipelines/runs/kakao-candidates").reply(200, {
       items: [
@@ -211,6 +229,11 @@ describe("CreateKakaoPipelineDialog", () => {
     expect(JSON.parse(request?.data as string)).toEqual({
       emails: ["selected@example.com"],
     })
+    expect(
+      mock.history.post.some((value) =>
+        value.url?.endsWith("/kakao/cards/select")
+      )
+    ).toBe(false)
   })
 })
 

@@ -16,24 +16,18 @@ export function SearchPage() {
   const query = searchParams.get("q")?.trim() ?? ""
   const accountParams = { search: query, limit: 20, offset: 0 }
   const pipelineParams = { search: query, limit: 20, offset: 0 }
-  const accounts = useListAccountsApiAccountsGet(
-    accountParams,
-    {
-      query: {
-        queryKey: getListAccountsApiAccountsGetQueryKey(accountParams),
-        enabled: Boolean(query),
-      },
-    }
-  )
-  const pipelines = useListPipelineRunsApiPipelinesRunsGet(
-    pipelineParams,
-    {
-      query: {
-        queryKey: getListPipelineRunsApiPipelinesRunsGetQueryKey(pipelineParams),
-        enabled: Boolean(query),
-      },
-    }
-  )
+  const accounts = useListAccountsApiAccountsGet(accountParams, {
+    query: {
+      queryKey: getListAccountsApiAccountsGetQueryKey(accountParams),
+      enabled: Boolean(query),
+    },
+  })
+  const pipelines = useListPipelineRunsApiPipelinesRunsGet(pipelineParams, {
+    query: {
+      queryKey: getListPipelineRunsApiPipelinesRunsGetQueryKey(pipelineParams),
+      enabled: Boolean(query),
+    },
+  })
   const empty =
     !accounts.isLoading &&
     !pipelines.isLoading &&

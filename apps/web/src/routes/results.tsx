@@ -1,6 +1,4 @@
-import {
-  getListResultsApiResultsGetQueryOptions,
-} from "@/api/generated"
+import { getListResultsApiResultsGetQueryOptions } from "@/api/generated"
 import { queryClient } from "@/lib/query-client"
 import { resultsRouteState } from "@/features/results/lib/results-route-state"
 import { redirect, type LoaderFunctionArgs } from "react-router"

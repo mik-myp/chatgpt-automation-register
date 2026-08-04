@@ -17,7 +17,6 @@ import {
   SelectValue,
 } from "@workspace/ui/components/select"
 import { TabsContent } from "@workspace/ui/components/tabs"
-import { Textarea } from "@workspace/ui/components/textarea"
 
 export function RegistrationSettingsTab() {
   const { form, setForm } = useSettingsForm()
@@ -30,76 +29,21 @@ export function RegistrationSettingsTab() {
       <div className="mx-auto w-full max-w-5xl">
         <Section
           title="运行参数"
-          description="这里是批量流水线的默认值；新建轮次未填写覆盖值时自动继承。并发过高会同时增加代理、邮箱和接码服务压力。"
+          description="这里是批量流水线的注册协议默认值；新建轮次未填写覆盖值时自动继承。并发设置统一位于“流水线与代理”。"
         >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="默认并发数">
-              <Input
-                max={50}
-                min={1}
-                type="number"
-                value={form.registration.concurrency ?? 10}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    registration: {
-                      ...form.registration,
-                      concurrency: Number(event.target.value),
-                    },
-                  })
-                }
-              />
-            </Field>
+          <div className="max-w-xs">
             <Field label="OTP 超时（秒）">
               <Input
                 max={300}
                 min={1}
                 type="number"
-                value={form.registration.otp_timeout ?? 10}
+                value={form.registration.otp_timeout ?? 60}
                 onChange={(event) =>
                   setForm({
                     ...form,
                     registration: {
                       ...form.registration,
                       otp_timeout: Number(event.target.value),
-                    },
-                  })
-                }
-              />
-            </Field>
-          </div>
-        </Section>
-
-        <Section
-          title="网络"
-          description="固定代理优先于代理池；未设置固定代理时，每个注册项从代理池随机选择一条。支持 http、https 和 socks5 地址。"
-        >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field className="sm:col-span-2" label="固定代理">
-              <Input
-                placeholder="http://user:password@host:port"
-                value={form.registration.proxy ?? ""}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    registration: {
-                      ...form.registration,
-                      proxy: event.target.value,
-                    },
-                  })
-                }
-              />
-            </Field>
-            <Field className="sm:col-span-2" label="代理池（每行一个）">
-              <Textarea
-                className="h-60 resize-y font-mono text-xs"
-                value={form.registration.proxy_pool ?? ""}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    registration: {
-                      ...form.registration,
-                      proxy_pool: event.target.value,
                     },
                   })
                 }

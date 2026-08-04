@@ -1,9 +1,6 @@
 import { Ban, ExternalLink, Eye, Play, RefreshCw } from "lucide-react"
 
-import {
-  KakaoTaskStatus,
-  type KakaoTaskSummary,
-} from "@/api/generated"
+import { KakaoTaskStatus, type KakaoTaskSummary } from "@/api/generated"
 import { StatusBadge } from "@/components/status-badge"
 import { TablePagination } from "@/components/table-pagination"
 import { TableRefreshButton } from "@/components/table-refresh-button"
@@ -81,7 +78,11 @@ export function KakaoTasksTab({
             setSelected([])
           }}
         >
-          <SelectTrigger aria-label="Kakao 任务状态" className="mr-2 w-32" size="sm">
+          <SelectTrigger
+            aria-label="Kakao 任务状态"
+            className="mr-2 w-32"
+            size="sm"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -102,15 +103,30 @@ export function KakaoTasksTab({
           />
           {selected.length > 0 && (
             <div className="flex items-center gap-1.5">
-              <Button disabled={pending} onClick={() => action("sync")} size="sm" variant="outline">
+              <Button
+                disabled={pending}
+                onClick={() => action("sync")}
+                size="sm"
+                variant="outline"
+              >
                 <RefreshCw />
                 同步
               </Button>
-              <Button disabled={pending} onClick={() => action("retry")} size="sm" variant="outline">
+              <Button
+                disabled={pending}
+                onClick={() => action("retry")}
+                size="sm"
+                variant="outline"
+              >
                 <Play />
                 重试
               </Button>
-              <Button disabled={pending} onClick={() => action("cancel")} size="sm" variant="outline">
+              <Button
+                disabled={pending}
+                onClick={() => action("cancel")}
+                size="sm"
+                variant="outline"
+              >
                 <Ban />
                 取消
               </Button>
@@ -146,14 +162,23 @@ export function KakaoTasksTab({
             {rows.map((task) => (
               <TableRow key={task.id}>
                 <TableCell>
-                  <RowCheckbox id={task.id} selected={selected} setSelected={setSelected} />
+                  <RowCheckbox
+                    id={task.id}
+                    selected={selected}
+                    setSelected={setSelected}
+                  />
                 </TableCell>
-                <TableCell className="font-mono text-xs">{task.email}</TableCell>
+                <TableCell className="font-mono text-xs">
+                  {task.email}
+                </TableCell>
                 <TableCell className="font-mono text-xs">
                   {task.upstream_job_id}
                 </TableCell>
                 <TableCell>
-                  <StatusBadge status={task.status} label={TASK_STATUS_LABELS[task.status]} />
+                  <StatusBadge
+                    status={task.status}
+                    label={TASK_STATUS_LABELS[task.status]}
+                  />
                 </TableCell>
                 <TableCell>
                   <StatusBadge
@@ -162,7 +187,11 @@ export function KakaoTasksTab({
                   />
                 </TableCell>
                 <TableCell>
-                  {task.card_charged == null ? "-" : task.card_charged ? "是" : "否"}
+                  {task.card_charged == null
+                    ? "-"
+                    : task.card_charged
+                      ? "是"
+                      : "否"}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -195,8 +224,17 @@ export function KakaoTasksTab({
                     <Ban />
                   </Button>
                   {task.payment_url && (
-                    <Button asChild aria-label="打开支付链接" size="icon-sm" variant="ghost">
-                      <a href={task.payment_url} rel="noreferrer" target="_blank">
+                    <Button
+                      asChild
+                      aria-label="打开支付链接"
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <a
+                        href={task.payment_url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
                         <ExternalLink />
                       </a>
                     </Button>
@@ -206,7 +244,10 @@ export function KakaoTasksTab({
             ))}
             {!loading && !rows.length && (
               <TableRow>
-                <TableCell className="h-40 text-center text-sm text-muted-foreground" colSpan={7}>
+                <TableCell
+                  className="h-40 text-center text-sm text-muted-foreground"
+                  colSpan={7}
+                >
                   本轮次暂无 Kakao 任务
                 </TableCell>
               </TableRow>

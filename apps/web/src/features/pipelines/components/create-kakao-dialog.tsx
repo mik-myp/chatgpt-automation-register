@@ -5,7 +5,6 @@ import { CreditCard, Search } from "lucide-react"
 import { toast } from "sonner"
 
 import {
-  type CardSelectionResponse,
   type KakaoPipelineCandidateList,
   type KakaoPipelineCandidatePage,
   type PipelineRunSummary,
@@ -100,17 +99,6 @@ export function CreateKakaoPipelineDialog({
       ? candidates.data.total
       : allRows.length
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
-  const capacity = useQuery<CardSelectionResponse, ApiError>({
-    queryKey: ["/api/kakao/cards/select", selected.length],
-    queryFn: () =>
-      apiRequest<CardSelectionResponse>("/api/kakao/cards/select", {
-        method: "POST",
-        data: { target_count: selected.length },
-      }),
-    enabled: open && selected.length > 0,
-    retry: false,
-    refetchOnWindowFocus: false,
-  })
   const mutation = useMutation<
     PipelineRunSummary,
     ApiError,
@@ -126,7 +114,6 @@ export function CreateKakaoPipelineDialog({
     onSuccess: (run) => {
       setOpen(false)
       void queryClient.invalidateQueries({ queryKey: ["/api/pipelines/runs"] })
-      void queryClient.invalidateQueries({ queryKey: ["/api/kakao/cards"] })
       toast.success(`已创建 Kakao 流水线 ${run.id.slice(0, 8)}`)
       void navigate(`/pipelines/${run.id}`)
     },
@@ -160,7 +147,7 @@ export function CreateKakaoPipelineDialog({
           <DialogDescription>
             {sourceRunId
               ? "选择该注册轮次中已有 Access Token 的账号。"
-              : "从注册结果中选择账号，系统会校验卡密容量后创建轮次。"}
+              : "从注册结果中选择具有有效 Access Token 的账号。"}
           </DialogDescription>
         </DialogHeader>
         <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -276,31 +263,16 @@ export function CreateKakaoPipelineDialog({
           />
         </div>
         <DialogFooter className="shrink-0 sm:items-center">
-          <div className="mr-auto min-w-0 text-xs break-words sm:max-w-md">
-            {selected.length === 0 ? (
-              <span className="text-muted-foreground">请选择账号</span>
-            ) : capacity.isFetching ? (
-              <span className="text-muted-foreground">
-                正在校验 {selected.length} 个卡密名额...
-              </span>
-            ) : capacity.isError ? (
-              <span className="text-destructive">{capacity.error.message}</span>
-            ) : (
-              <span className="text-emerald-700 dark:text-emerald-300">
-                已确认 {selected.length} 个卡密名额
-              </span>
-            )}
-          </div>
+          <span className="mr-auto text-xs text-muted-foreground">
+            {selected.length
+              ? `将处理 ${selected.length} 个账号`
+              : "请选择账号"}
+          </span>
           <DialogClose asChild>
             <Button variant="outline">取消</Button>
           </DialogClose>
           <Button
-            disabled={
-              !selected.length ||
-              capacity.isFetching ||
-              capacity.isError ||
-              mutation.isPending
-            }
+            disabled={!selected.length || mutation.isPending}
             onClick={() => mutation.mutate({ emails: selected })}
           >
             <CreditCard />

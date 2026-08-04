@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -7,8 +6,7 @@ from sqlalchemy import select
 from gpt_auto_register.api.dependencies import DatabaseSession
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
-from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
-from gpt_auto_register.modules.kakao.client import KakaoApiError, KakaoClient, payload_tasks
+from gpt_auto_register.db.models.kakao import KakaoTaskStatus
 from gpt_auto_register.modules.kakao.repository import KakaoTaskRepository
 from gpt_auto_register.modules.kakao.schemas import (
     KakaoEligibilityItem,
@@ -20,27 +18,14 @@ from gpt_auto_register.modules.kakao.schemas import (
     KakaoTaskSummary,
 )
 from gpt_auto_register.modules.kakao.state import (
-    apply_payment,
-    apply_retry,
-    apply_upstream,
     completed_extraction_emails,
     mark_extraction_completed,
+    release_extraction_claim,
     synchronized_kakao_state,
 )
 from gpt_auto_register.modules.pipelines.repository import PipelineRepository
-from gpt_auto_register.modules.settings.service import SettingsService
 
 router = APIRouter(prefix="/kakao/tasks", tags=["kakao-tasks"])
-
-
-def _client(db: DatabaseSession) -> KakaoClient:
-    settings = SettingsService(db).kakao_internal()
-    if not settings.base_url:
-        raise HTTPException(status.HTTP_409_CONFLICT, "请先配置 Kakao Base URL")
-    try:
-        return KakaoClient(settings.base_url, settings.timeout)
-    except ValueError as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
 
 
 @router.get("", response_model=KakaoTaskListResponse)
@@ -103,43 +88,29 @@ def check_kakao_eligibility(
     tokens = [credentials[email].access_token for email in emails if credentials.get(email)]
     if len(tokens) != len(emails) or any(not token for token in tokens):
         raise HTTPException(status.HTTP_409_CONFLICT, "部分注册结果缺少 Access Token")
-    client = _client(db)
     checked_at = utc_now().isoformat()
     items: list[KakaoEligibilityItem] = []
-    for start in range(0, len(emails), 50):
-        group_emails = emails[start : start + 50]
-        try:
-            values = payload_tasks(
-                client.check_eligibility(
-                    [str(credentials[email].access_token) for email in group_emails]
-                )
-            )
-        except KakaoApiError as error:
-            raise HTTPException(error.status_code, str(error)) from error
-        by_index = {
-            str(value.get("index")): value for value in values if value.get("index") is not None
+    completed = completed_extraction_emails(db, emails)
+    for email in emails:
+        eligible = email not in completed
+        state_value = "eligible" if eligible else "already_extracted"
+        error_value = "" if eligible else "该邮箱已生成过 Kakao 支付链接"
+        credential = credentials[email]
+        credential.metadata_json = {
+            **credential.metadata_json,
+            "kakao_eligible": eligible,
+            "kakao_state": state_value,
+            "kakao_error": error_value,
+            "kakao_checked_at": checked_at,
         }
-        for index, email in enumerate(group_emails):
-            value = by_index.get(str(index)) or (values[index] if index < len(values) else {})
-            eligible = value.get("eligible") is True
-            state_value = str(value.get("state") or "unknown")
-            error_value = str(value.get("error") or "")
-            credential = credentials[email]
-            credential.metadata_json = {
-                **credential.metadata_json,
-                "kakao_eligible": eligible,
-                "kakao_state": state_value,
-                "kakao_error": error_value,
-                "kakao_checked_at": checked_at,
-            }
-            items.append(
-                KakaoEligibilityItem(
-                    email=email,
-                    eligible=eligible,
-                    state=state_value,
-                    error=error_value,
-                )
+        items.append(
+            KakaoEligibilityItem(
+                email=email,
+                eligible=eligible,
+                state=state_value,
+                error=error_value,
             )
+        )
     db.commit()
     return KakaoEligibilityResponse(items=items)
 
@@ -153,24 +124,12 @@ def sync_kakao_tasks(
     tasks = KakaoTaskRepository(db).selected(request.task_ids, request.pipeline_run_id)
     if not tasks:
         return KakaoTaskActionResponse(processed=0)
-    processed = failed = 0
-    client = _client(db)
-    for start in range(0, len(tasks), 50):
-        group = tasks[start : start + 50]
-        try:
-            values = payload_tasks(client.task_statuses([task.upstream_job_id for task in group]))
-            by_id = {str(value.get("job_id") or value.get("id") or ""): value for value in values}
-            for task in group:
-                value = by_id.get(task.upstream_job_id)
-                if value is None:
-                    failed += 1
-                    continue
-                apply_upstream(task, value, db)
-                processed += 1
-        except KakaoApiError:
-            failed += len(group)
-    db.commit()
-    return KakaoTaskActionResponse(processed=processed, failed=failed)
+    changed = False
+    for task in tasks:
+        changed = mark_extraction_completed(db, task) or changed
+    if changed:
+        db.commit()
+    return KakaoTaskActionResponse(processed=len(tasks), failed=0)
 
 
 @router.post("/payment-sync", response_model=KakaoTaskActionResponse)
@@ -179,35 +138,13 @@ def sync_kakao_payment_statuses(
     request: KakaoTaskIdsRequest,
     db: DatabaseSession,
 ) -> KakaoTaskActionResponse:
-    tasks = [
-        task
-        for task in KakaoTaskRepository(db).selected(request.task_ids, request.pipeline_run_id)
-        if task.status == KakaoTaskStatus.DONE
-        and task.payment_status not in {"succeeded", "failed", "canceled", "expired"}
-    ]
-    if not tasks:
-        return KakaoTaskActionResponse(processed=0)
-    client = _client(db)
-
-    def fetch(task: KakaoTask) -> tuple[str, object]:
-        try:
-            return task.id, client.kakao_status(task.upstream_job_id)
-        except KakaoApiError as error:
-            return task.id, error
-
-    workers = min(8, len(tasks))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        results = dict(executor.map(fetch, tasks))
-    processed = failed = 0
+    tasks = KakaoTaskRepository(db).selected(request.task_ids, request.pipeline_run_id)
+    changed = False
     for task in tasks:
-        value = results.get(task.id)
-        if isinstance(value, KakaoApiError) or not isinstance(value, dict):
-            failed += 1
-            continue
-        apply_payment(task, value, db)
-        processed += 1
-    db.commit()
-    return KakaoTaskActionResponse(processed=processed, failed=failed)
+        changed = mark_extraction_completed(db, task) or changed
+    if changed:
+        db.commit()
+    return KakaoTaskActionResponse(processed=len(tasks), failed=0)
 
 
 @router.get("/{task_id}/upstream")
@@ -215,10 +152,7 @@ def get_kakao_task_upstream(task_id: str, db: DatabaseSession) -> object:
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kakao 任务不存在")
-    try:
-        return _client(db).task_detail(task.upstream_job_id)
-    except KakaoApiError as error:
-        raise HTTPException(error.status_code, str(error)) from error
+    return task.upstream_payload
 
 
 @router.get("/{task_id}/details")
@@ -227,29 +161,12 @@ def get_kakao_task_details(task_id: str, db: DatabaseSession) -> object:
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kakao 任务不存在")
-    client = _client(db)
-    detail: object | None = None
-    kakao_status: object | None = None
-    detail_error = kakao_error = ""
-    try:
-        detail = client.task_detail(task.upstream_job_id)
-        if isinstance(detail, dict):
-            apply_upstream(task, detail, db)
-    except KakaoApiError as error:
-        detail_error = str(error)
-    try:
-        kakao_status = client.kakao_status(task.upstream_job_id)
-        if isinstance(kakao_status, dict):
-            apply_payment(task, kakao_status, db)
-    except KakaoApiError as error:
-        kakao_error = str(error)
-    db.commit()
     return {
         "local": KakaoTaskSummary.model_validate(task).model_dump(mode="json"),
-        "task": detail,
-        "task_error": detail_error,
-        "kakao_status": kakao_status,
-        "kakao_status_error": kakao_error,
+        "task": task.upstream_payload,
+        "task_error": "",
+        "kakao_status": {"payment_status": task.payment_status},
+        "kakao_status_error": "",
     }
 
 
@@ -259,14 +176,14 @@ def cancel_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespo
     task = KakaoTaskRepository(db).get(task_id)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kakao 任务不存在")
-    try:
-        payload = _client(db).cancel_task(task.upstream_job_id)
-        values = payload_tasks(payload)
-        apply_upstream(task, values[0] if values else {"status": "canceled"}, db)
-        db.commit()
-        return KakaoTaskActionResponse(processed=1)
-    except KakaoApiError as error:
-        raise HTTPException(error.status_code, str(error)) from error
+    if task.status in {KakaoTaskStatus.DONE, KakaoTaskStatus.FAILED, KakaoTaskStatus.CANCELED}:
+        return KakaoTaskActionResponse(processed=0)
+    task.status = KakaoTaskStatus.CANCELED
+    task.payment_status = "canceled"
+    task.error = "用户取消"
+    release_extraction_claim(db, task)
+    db.commit()
+    return KakaoTaskActionResponse(processed=1)
 
 
 @router.post("/{task_id}/retry", response_model=KakaoTaskActionResponse)
@@ -277,11 +194,10 @@ def retry_kakao_task(task_id: str, db: DatabaseSession) -> KakaoTaskActionRespon
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kakao 任务不存在")
     if task.email.strip().lower() in completed_extraction_emails(db, [task.email]):
         raise HTTPException(status.HTTP_409_CONFLICT, "该邮箱已生成过 Kakao 支付链接")
-    try:
-        payload = _client(db).retry_task(task.upstream_job_id)
-        values = payload_tasks(payload)
-        apply_retry(task, values[0] if values else {"status": "queued"}, db)
-        db.commit()
-        return KakaoTaskActionResponse(processed=1)
-    except KakaoApiError as error:
-        raise HTTPException(error.status_code, str(error)) from error
+    release_extraction_claim(db, task)
+    PipelineRepository(db).create_kakao(
+        source_run_id=task.pipeline_run_id,
+        emails=[task.email.strip().lower()],
+    )
+    db.commit()
+    return KakaoTaskActionResponse(processed=1)

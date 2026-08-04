@@ -19,21 +19,12 @@ from gpt_auto_register.core.config import get_settings
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.auth import SetupState
 from gpt_auto_register.db.models.jobs import Job, JobStatus
-from gpt_auto_register.db.models.kakao import (
-    KakaoTask,
-    KakaoTaskStatus,
-)
 from gpt_auto_register.db.models.pipeline import (
     PipelineRun,
     PipelineStatus,
 )
 from gpt_auto_register.db.result import affected_rows
 from gpt_auto_register.db.session import SessionLocal, engine
-from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
-from gpt_auto_register.modules.kakao.state import (
-    apply_upstream,
-    synchronized_kakao_state,
-)
 from gpt_auto_register.modules.settings.maintenance import cleanup_storage
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.account_security_executor import AccountSecurityExecutor
@@ -58,8 +49,9 @@ class WorkerManager:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._active_cancel_event: threading.Event | None = None
+        self._active_jobs: dict[str, tuple[threading.Thread, threading.Event, str]] = {}
+        self._active_jobs_lock = threading.Lock()
         self.worker_id = f"local-{os.getpid()}"
-        self._next_kakao_sync = 0.0
         self._next_maintenance = 0.0
         self._lock_file: TextIO | None = None
         self._lock_connection: Connection | None = None
@@ -152,21 +144,43 @@ class WorkerManager:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._active_cancel_event is not None:
-            self._active_cancel_event.set()
+        with self._active_jobs_lock:
+            active = list(self._active_jobs.values())
+        for _, cancel_event, _ in active:
+            cancel_event.set()
         if self._thread:
             self._thread.join()
             self._thread = None
+        for active_thread, _, _ in active:
+            active_thread.join()
         self._release_singleton_lock()
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
+    @staticmethod
+    def _task_type(job: Job, run: PipelineRun | None) -> str:
+        if job.kind == "account.security":
+            return "account_security"
+        if job.kind == "pipeline.run" and run is not None:
+            return "kakao" if run.kind.value == "kakao" else "registration"
+        return "other"
+
     def _claim(self) -> Job | None:
         now = utc_now()
         with self._session_factory() as session:
-            candidate = (
-                select(Job.id)
+            pipeline_settings = SettingsService(session).pipeline_internal()
+            limits = {
+                "registration": pipeline_settings.registration_task_concurrency,
+                "account_security": pipeline_settings.account_security_task_concurrency,
+                "kakao": pipeline_settings.kakao_task_concurrency,
+                "other": 1,
+            }
+            with self._active_jobs_lock:
+                active_types = [value[2] for value in self._active_jobs.values()]
+            candidates = list(
+                session.scalars(
+                    select(Job)
                 .where(
                     Job.kind.in_(
                         [
@@ -184,12 +198,51 @@ class WorkerManager:
                     Job.available_at <= now,
                 )
                 .order_by(Job.priority.desc(), Job.created_at, Job.id)
-                .limit(1)
-                .scalar_subquery()
+                    .limit(100)
+                )
             )
+            ordered_types = list(pipeline_settings.step_order)
+            pending_types: set[str] = {
+                self._task_type(
+                    value,
+                    session.get(PipelineRun, value.pipeline_run_id)
+                    if value.pipeline_run_id
+                    else None,
+                )
+                for value in candidates
+            }
+            blocking_types = pending_types | {
+                value for value in active_types if value in ordered_types
+            }
+            required_type = next(
+                (value for value in ordered_types if value in blocking_types),
+                None,
+            )
+            candidate: Job | None = None
+            for value in candidates:
+                run = (
+                    session.get(PipelineRun, value.pipeline_run_id)
+                    if value.pipeline_run_id
+                    else None
+                )
+                task_type = self._task_type(value, run)
+                if required_type is not None and task_type != required_type:
+                    continue
+                if active_types.count(task_type) < limits[task_type]:
+                    candidate = value
+                    break
+            if candidate is None:
+                return None
             statement = (
                 update(Job)
-                .where(Job.id == candidate)
+                .where(
+                    Job.id == candidate.id,
+                    or_(
+                        Job.status == JobStatus.QUEUED,
+                        (Job.status == JobStatus.RUNNING)
+                        & (Job.lease_expires_at.is_(None) | (Job.lease_expires_at < now)),
+                    ),
+                )
                 .values(
                     status=JobStatus.RUNNING,
                     attempts=Job.attempts + 1,
@@ -288,42 +341,91 @@ class WorkerManager:
                 job.lease_expires_at = utc_now() + timedelta(minutes=2)
                 session.commit()
 
-    @synchronized_kakao_state
-    def _sync_kakao_tasks(self) -> None:
-        with self._session_factory() as session:
-            settings = SettingsService(session).kakao_internal()
-            if not settings.base_url:
-                return
-            tasks = list(
-                session.scalars(
-                    select(KakaoTask)
-                    .where(
-                        KakaoTask.status.in_([KakaoTaskStatus.QUEUED, KakaoTaskStatus.EXTRACTING])
-                    )
-                    .order_by(KakaoTask.updated_at)
-                    .limit(200)
-                )
+    def _run_claimed_job(self, job: Job, cancel_event: threading.Event) -> None:
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._heartbeat,
+            args=(job.id, heartbeat_stop),
+            daemon=True,
+            name=f"job-heartbeat-{job.id[:8]}",
+        )
+        heartbeat.start()
+        try:
+            run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
+            cancellation_monitor = (
+                monitor_run_cancellation(run_id, self._session_factory)
+                if run_id
+                else monitor_job_cancellation(job.id, self._session_factory)
             )
-            if not tasks:
-                return
-            client = KakaoClient(settings.base_url, settings.timeout)
-            for start in range(0, len(tasks), 50):
-                group = tasks[start : start + 50]
-                try:
-                    values = payload_tasks(
-                        client.task_statuses([task.upstream_job_id for task in group])
+            with cancellation_monitor as monitored_cancel:
+                def mirror_cancellation() -> None:
+                    while not cancel_event.is_set() and not monitored_cancel.wait(0.25):
+                        pass
+                    cancel_event.set()
+
+                cancellation_thread = threading.Thread(
+                    target=mirror_cancellation,
+                    daemon=True,
+                    name=f"job-cancellation-{job.id[:8]}",
+                )
+                cancellation_thread.start()
+                if job.kind in {"results.plus_check", "results.publish"}:
+                    result = ResultOperationExecutor(
+                        job.id,
+                        job.payload,
+                        cancel_event,
+                        self._session_factory,
+                    ).execute()
+                    self._finish(job.id, result=result)
+                    return
+                if job.kind == "account.security":
+                    result = AccountSecurityExecutor(
+                        job.id,
+                        job.payload,
+                        cancel_event,
+                        self._session_factory,
+                    ).execute()
+                    failed = int(result.get("failed") or 0)
+                    self._finish(
+                        job.id,
+                        result=result,
+                        error=f"{failed} 个账号安全操作失败" if failed else None,
                     )
-                except Exception:
-                    continue
-                by_id = {
-                    str(value.get("job_id") or value.get("id") or ""): value for value in values
-                }
-                for task in group:
-                    value = by_id.get(task.upstream_job_id)
-                    if value is None:
-                        continue
-                    apply_upstream(task, value, session)
-            session.commit()
+                    return
+                retry_item_ids = job.payload.get("retry_item_ids")
+                item_ids = (
+                    [str(value) for value in retry_item_ids]
+                    if isinstance(retry_item_ids, list)
+                    else None
+                )
+                result = PipelineExecutor(
+                    job.id,
+                    run_id,
+                    item_ids,
+                    cancel_event,
+                    self._session_factory,
+                ).execute()
+                self._finish(job.id, result=result)
+        except RuntimeCanceledError:
+            if self._stop.is_set():
+                self._interrupt(job.id)
+        except Exception as error:
+            _emit(job.id, "job_failed", str(error), level="error")
+            final_status = self._finish(job.id, error=str(error))
+            if final_status == JobStatus.FAILED:
+                with self._session_factory() as session:
+                    run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
+                    run = session.get(PipelineRun, run_id)
+                    if run is not None and run.status != PipelineStatus.CANCELED:
+                        run.status = PipelineStatus.FAILED
+                        run.finished_at = utc_now()
+                    session.commit()
+        finally:
+            cancel_event.set()
+            heartbeat_stop.set()
+            heartbeat.join(timeout=1)
+            with self._active_jobs_lock:
+                self._active_jobs.pop(job.id, None)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -334,10 +436,6 @@ class WorkerManager:
                         self._stop.wait(1)
                         continue
             now = time.monotonic()
-            if now >= self._next_kakao_sync:
-                self._next_kakao_sync = now + 5
-                with suppress(Exception):
-                    self._sync_kakao_tasks()
             if now >= self._next_maintenance:
                 self._next_maintenance = now + 3600
                 with suppress(Exception), self._session_factory() as session:
@@ -352,77 +450,22 @@ class WorkerManager:
             if job is None:
                 self._stop.wait(0.5)
                 continue
-            heartbeat_stop = threading.Event()
-            heartbeat = threading.Thread(
-                target=self._heartbeat,
-                args=(job.id, heartbeat_stop),
+            cancel_event = threading.Event()
+            with self._session_factory() as session:
+                run = session.get(PipelineRun, job.pipeline_run_id) if job.pipeline_run_id else None
+                task_type = self._task_type(job, run)
+            worker_thread = threading.Thread(
+                target=self._run_claimed_job,
+                args=(job, cancel_event),
                 daemon=True,
-                name=f"job-heartbeat-{job.id[:8]}",
+                name=f"job-{task_type}-{job.id[:8]}",
             )
-            heartbeat.start()
-            try:
-                run_id = str(job.pipeline_run_id or job.payload.get("pipeline_run_id") or "")
-                cancellation_monitor = (
-                    monitor_run_cancellation(run_id, self._session_factory)
-                    if run_id
-                    else monitor_job_cancellation(job.id, self._session_factory)
-                )
-                with cancellation_monitor as cancel_event:
-                    self._active_cancel_event = cancel_event
-                    if job.kind in {"results.plus_check", "results.publish"}:
-                        result = ResultOperationExecutor(
-                            job.id,
-                            job.payload,
-                            cancel_event,
-                            self._session_factory,
-                        ).execute()
-                        self._finish(job.id, result=result)
-                        continue
-                    if job.kind == "account.security":
-                        result = AccountSecurityExecutor(
-                            job.id,
-                            job.payload,
-                            cancel_event,
-                            self._session_factory,
-                        ).execute()
-                        failed = int(result.get("failed") or 0)
-                        self._finish(
-                            job.id,
-                            result=result,
-                            error=f"{failed} 个账号安全操作失败" if failed else None,
-                        )
-                        continue
-                    retry_item_ids = job.payload.get("retry_item_ids")
-                    item_ids = (
-                        [str(value) for value in retry_item_ids]
-                        if isinstance(retry_item_ids, list)
-                        else None
-                    )
-                    result = PipelineExecutor(
-                        job.id,
-                        run_id,
-                        item_ids,
-                        cancel_event,
-                        self._session_factory,
-                    ).execute()
-                    self._finish(job.id, result=result)
-            except RuntimeCanceledError:
-                if self._stop.is_set():
-                    self._interrupt(job.id)
-            except Exception as error:
-                _emit(job.id, "job_failed", str(error), level="error")
-                final_status = self._finish(job.id, error=str(error))
-                if final_status == JobStatus.FAILED:
-                    with self._session_factory() as session:
-                        run_id = str(
-                            job.pipeline_run_id or job.payload.get("pipeline_run_id") or ""
-                        )
-                        run = session.get(PipelineRun, run_id)
-                        if run is not None and run.status != PipelineStatus.CANCELED:
-                            run.status = PipelineStatus.FAILED
-                            run.finished_at = utc_now()
-                        session.commit()
-            finally:
-                self._active_cancel_event = None
-                heartbeat_stop.set()
-                heartbeat.join(timeout=1)
+            with self._active_jobs_lock:
+                self._active_jobs[job.id] = (worker_thread, cancel_event, task_type)
+            _emit(
+                job.id,
+                "task_started",
+                f"任务开始执行，类型 {task_type}",
+                data={"task_type": task_type},
+            )
+            worker_thread.start()

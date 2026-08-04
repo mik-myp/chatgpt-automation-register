@@ -19,11 +19,6 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineStatus,
 )
 from gpt_auto_register.modules.accounts.repository import AccountRepository
-from gpt_auto_register.modules.cards.allocator import (
-    CardAllocationError,
-    CardAllocator,
-    card_allocation_guard,
-)
 from gpt_auto_register.modules.kakao.state import (
     KakaoClaimConflictError,
     active_extraction_emails,
@@ -222,33 +217,30 @@ def _create_kakao_pipeline(
     allowed_emails: set[str] | None = None,
 ) -> PipelineRunSummary:
     try:
-        with card_allocation_guard():
-            completed_emails = completed_extraction_emails(db, requested)
-            if completed_emails:
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT,
-                    f"所选账号中有 {len(completed_emails)} 个已生成过 Kakao 支付链接，"
-                    "请刷新后重新选择",
-                )
-            eligible = _eligible_kakao_accounts(
-                db,
-                requested,
-                allowed_emails=allowed_emails,
+        completed_emails = completed_extraction_emails(db, requested)
+        if completed_emails:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"所选账号中有 {len(completed_emails)} 个已生成过 Kakao 支付链接，"
+                "请刷新后重新选择",
             )
-            if len(eligible) != len(requested):
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT,
-                    "所选账号中存在活动任务、缺少 Access Token、不属于来源轮次或已完成提取，"
-                    "请刷新后重新选择",
-                )
-            card_slots, _ = CardAllocator(db).select(len(eligible))
-            run = PipelineRepository(db).create_kakao(
-                source_run_id=source_run_id,
-                emails=eligible,
-                card_slots=card_slots,
+        eligible = _eligible_kakao_accounts(
+            db,
+            requested,
+            allowed_emails=allowed_emails,
+        )
+        if len(eligible) != len(requested):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "所选账号中存在活动任务、缺少 Access Token、不属于来源轮次或已完成提取，"
+                "请刷新后重新选择",
             )
-            db.commit()
-    except (CardAllocationError, KakaoClaimConflictError) as error:
+        run = PipelineRepository(db).create_kakao(
+            source_run_id=source_run_id,
+            emails=eligible,
+        )
+        db.commit()
+    except KakaoClaimConflictError as error:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
     db.refresh(run)
@@ -274,6 +266,13 @@ def _eligible_security_accounts(
         if (
             email not in account_emails
             or credential is None
+            or not any(
+                (
+                    credential.access_token,
+                    credential.session_token,
+                    credential.cookie_header,
+                )
+            )
             or email in busy_emails
             or (allowed_emails is not None and email not in allowed_emails)
         ):
@@ -345,10 +344,13 @@ def create_pipeline_run(
 ) -> PipelineRunSummary:
     email = request.email.strip().lower()
 
-    defaults = SettingsService(db).registration_internal()
+    settings_service = SettingsService(db)
+    defaults = settings_service.registration_internal()
+    pipeline_settings = settings_service.pipeline_internal()
+    proxy_settings = settings_service.proxy_internal()
     registration = defaults.model_dump()
     overrides: dict[str, object] = {}
-    for field in ("concurrency", "otp_timeout", "proxy", "proxy_pool"):
+    for field in ("concurrency", "otp_timeout"):
         value = getattr(request, field)
         if value is None:
             continue
@@ -360,26 +362,20 @@ def create_pipeline_run(
         want_refresh_token=True,
     )
     target_count = 1 if request.mode == "single" else request.target_count
-    try:
-        with card_allocation_guard():
-            card_slots = (
-                CardAllocator(db).select(target_count)[0] if request.kakao_enabled else None
-            )
-            run = PipelineRepository(db).create(
-                mode=request.mode,
-                target_count=target_count,
-                email=email or None,
-                kakao_enabled=request.kakao_enabled,
-                card_slots=card_slots,
-                config_snapshot={
-                    "registration": registration,
-                    "overrides": overrides,
-                    "inherit_unset_fields": True,
-                },
-            )
-            db.commit()
-    except CardAllocationError as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    run = PipelineRepository(db).create(
+        mode=request.mode,
+        target_count=target_count,
+        email=email or None,
+        kakao_enabled=False,
+        config_snapshot={
+            "registration": registration,
+            "overrides": overrides,
+            "inherit_unset_fields": True,
+            "step_order": pipeline_settings.step_order,
+            "proxy_max_attempts": proxy_settings.max_attempts_per_account,
+        },
+    )
+    db.commit()
     db.refresh(run)
     return PipelineRunSummary.model_validate(run)
 

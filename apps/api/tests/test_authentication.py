@@ -13,7 +13,7 @@ from gpt_auto_register.core.encryption import MasterKeyError, decrypt_text, encr
 from gpt_auto_register.core.local_access import origin_matches_request_host
 from gpt_auto_register.core.security import token_hash
 from gpt_auto_register.db.base import Base, utc_now
-from gpt_auto_register.db.models.auth import SetupState, UserSession
+from gpt_auto_register.db.models.auth import SetupState, UserRole, UserSession
 from gpt_auto_register.db.session import get_db
 from gpt_auto_register.main import create_app
 
@@ -139,6 +139,53 @@ def test_login_rate_limit(auth_client: tuple[TestClient, Session]) -> None:
         ).status_code
         == 429
     )
+
+
+def test_user_management_supports_admin_and_standard_roles(
+    auth_client: tuple[TestClient, Session],
+) -> None:
+    client, _session = auth_client
+    initialized = client.post(
+        "/api/setup/initialize",
+        headers={"origin": ORIGIN},
+        json={"token": SETUP_TOKEN, "username": "admin", "password": "123456"},
+    )
+    csrf = initialized.json()["csrf_token"]
+    created = client.post(
+        "/api/users",
+        headers={"origin": ORIGIN, "x-csrf-token": csrf},
+        json={"username": "operator", "password": "654321", "role": "user"},
+    )
+    assert created.status_code == 201
+    assert created.json()["role"] == UserRole.USER
+
+    listed = client.get("/api/users")
+    assert listed.status_code == 200
+    assert [(item["username"], item["role"]) for item in listed.json()["items"]] == [
+        ("admin", "admin"),
+        ("operator", "user"),
+    ]
+
+
+def test_setup_and_password_change_accept_six_character_passwords(
+    auth_client: tuple[TestClient, Session],
+) -> None:
+    client, _session = auth_client
+    initialized = client.post(
+        "/api/setup/initialize",
+        headers={"origin": ORIGIN},
+        json={"token": SETUP_TOKEN, "username": "admin", "password": "123456"},
+    )
+    assert initialized.status_code == 200
+    changed = client.post(
+        "/api/auth/change-password",
+        headers={
+            "origin": ORIGIN,
+            "x-csrf-token": initialized.json()["csrf_token"],
+        },
+        json={"current_password": "123456", "new_password": "654321"},
+    )
+    assert changed.status_code == 204
 
 
 def test_encryption_rejects_tampered_ciphertext() -> None:

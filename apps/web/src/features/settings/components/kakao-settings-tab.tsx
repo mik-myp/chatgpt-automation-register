@@ -7,6 +7,7 @@ import { Field, Section } from "@/features/settings/components/settings-fields"
 import { ApiError, apiRequest } from "@/lib/api-client"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import { Switch } from "@workspace/ui/components/switch"
 import { TabsContent } from "@workspace/ui/components/tabs"
 
 export function KakaoSettingsTab() {
@@ -23,21 +24,10 @@ export function KakaoSettingsTab() {
     <TabsContent className="mt-5 min-h-0 flex-1 overflow-auto" value="kakao">
       <div className="mx-auto w-full max-w-5xl">
         <Section
-          title="服务连接"
-          description="单卡可用总次数同时扣除已扣卡和排队/提取中的任务；卡密分配前会查询上游实时用量，并扣除本地尚未提交的预留名额。"
+          title="本地提取引擎"
+          description="Kakao 任务由本机直接执行 KR → VN → KR 支付流程。KR 和 VN 代理由全局代理 API 按账号尝试次数分别获取。"
         >
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field className="sm:col-span-2" label="Base URL">
-              <Input
-                value={form.kakao.base_url ?? ""}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    kakao: { ...form.kakao, base_url: event.target.value },
-                  })
-                }
-              />
-            </Field>
             <Field label="请求超时（秒）">
               <Input
                 max={300}
@@ -55,25 +45,26 @@ export function KakaoSettingsTab() {
                 }
               />
             </Field>
-            <Field label="单卡可用总次数">
+            <Field label="支付跳转轮询超时（秒）">
               <Input
-                min={1}
+                max={300}
+                min={30}
                 type="number"
-                value={form.kakao.card_usage_limit ?? 10}
+                value={form.kakao.poll_timeout ?? 120}
                 onChange={(event) =>
                   setForm({
                     ...form,
                     kakao: {
                       ...form.kakao,
-                      card_usage_limit: Number(event.target.value),
+                      poll_timeout: Number(event.target.value),
                     },
                   })
                 }
               />
             </Field>
-            <Field className="sm:col-span-2" label="Promo Code">
+            <Field label="Promotion ID">
               <Input
-                value={form.kakao.promo_code ?? ""}
+                value={form.kakao.promo_code ?? "plus-1-month-free"}
                 onChange={(event) =>
                   setForm({
                     ...form,
@@ -85,6 +76,21 @@ export function KakaoSettingsTab() {
                 }
               />
             </Field>
+            <label className="flex min-h-10 items-center justify-between gap-3 border-b text-sm">
+              <span>强制校验 KR/VN 实际出口</span>
+              <Switch
+                checked={form.kakao.verify_proxy_countries ?? true}
+                onCheckedChange={(checked) =>
+                  setForm({
+                    ...form,
+                    kakao: {
+                      ...form.kakao,
+                      verify_proxy_countries: checked,
+                    },
+                  })
+                }
+              />
+            </label>
           </div>
           <div className="mt-4 flex justify-end">
             <Button
@@ -94,7 +100,7 @@ export function KakaoSettingsTab() {
               variant="outline"
             >
               <PlugZap />
-              测试连接
+              测试本地引擎
             </Button>
           </div>
         </Section>

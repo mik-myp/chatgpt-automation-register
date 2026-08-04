@@ -29,21 +29,23 @@ export function ResultOperationList() {
     void queryClient.invalidateQueries({ queryKey })
     void queryClient.invalidateQueries({ queryKey: ["/api/results"] })
   }
-  const cancel = useCancelResultOperationApiResultOperationsJobIdCancelPost<ApiError>({
-    mutation: {
-      onSuccess: refresh,
-      onError: (error) => toast.error(error.message),
-    },
-  })
-  const retry = useRetryResultOperationApiResultOperationsJobIdRetryPost<ApiError>({
-    mutation: {
-      onSuccess: () => {
-        refresh()
-        toast.success("任务已重新排队")
+  const cancel =
+    useCancelResultOperationApiResultOperationsJobIdCancelPost<ApiError>({
+      mutation: {
+        onSuccess: refresh,
+        onError: (error) => toast.error(error.message),
       },
-      onError: (error) => toast.error(error.message),
-    },
-  })
+    })
+  const retry =
+    useRetryResultOperationApiResultOperationsJobIdRetryPost<ApiError>({
+      mutation: {
+        onSuccess: () => {
+          refresh()
+          toast.success("任务已重新排队")
+        },
+        onError: (error) => toast.error(error.message),
+      },
+    })
   const rows = operations.data?.items ?? []
   if (!rows.length) return null
 
@@ -61,7 +63,7 @@ export function ResultOperationList() {
                 : "结果发布"}
             </span>
             <StatusBadge status={operation.status} />
-            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground tabular-nums">
               {operation.processed}/{operation.total}
             </span>
             {operation.failed > 0 && (

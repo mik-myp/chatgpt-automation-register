@@ -10,7 +10,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url)
   const { page, pageSize, params } = accountsRouteState(url.searchParams)
   const [data] = await Promise.all([
-    queryClient.ensureQueryData(getListAccountsApiAccountsGetQueryOptions(params)),
+    queryClient.ensureQueryData(
+      getListAccountsApiAccountsGetQueryOptions(params)
+    ),
     queryClient.ensureQueryData(
       getGetAccountStatsApiAccountsStatsGetQueryOptions()
     ),

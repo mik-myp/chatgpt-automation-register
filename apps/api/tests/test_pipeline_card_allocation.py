@@ -7,14 +7,11 @@ from gpt_auto_register.db.models.accounts import (
     OutlookAccount,
     RegistrationRun,
 )
-from gpt_auto_register.db.models.jobs import Job
+from gpt_auto_register.db.models.jobs import Job, JobEvent
 from gpt_auto_register.db.models.kakao import (
-    KakaoCard,
-    KakaoCardBatch,
     KakaoClaimState,
     KakaoEmailClaim,
     KakaoTask,
-    PipelineCardAllocation,
 )
 from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
@@ -23,10 +20,12 @@ from gpt_auto_register.db.models.pipeline import (
     PipelineRunKind,
     PipelineStatus,
 )
-from gpt_auto_register.db.models.settings import AppSetting
-from gpt_auto_register.modules.cards.allocator import CardAllocator
-from gpt_auto_register.modules.kakao.client import KakaoClient
-from gpt_auto_register.worker import executor_support, pipeline_executor
+from gpt_auto_register.modules.kakao.local_service import (
+    KakaoExtractionError,
+    KakaoExtractionResult,
+)
+from gpt_auto_register.worker import executor_support, pipeline_executor, pipeline_kakao_executor
+from gpt_auto_register.worker.proxy_service import ProxyAllocator, ProxyBatch
 
 
 def configure_executor(monkeypatch: pytest.MonkeyPatch, factory: object) -> None:
@@ -34,37 +33,30 @@ def configure_executor(monkeypatch: pytest.MonkeyPatch, factory: object) -> None
     monkeypatch.setattr(executor_support, "SessionLocal", factory)
 
 
-def test_first_card_allocation_initializes_counters(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = PipelineRun(target_count=1, kakao_enabled=True, config_snapshot={})
-    batch = KakaoCardBatch(name="test")
-    db_session.add_all([run, batch])
-    db_session.flush()
-    item = PipelineItem(pipeline_run_id=run.id, position=0)
-    card = KakaoCard(batch_id=batch.id, code="test-card", position=0)
-    job = Job(id="allocation-job", kind="pipeline.run", payload={})
-    db_session.add_all([item, card, job])
-    db_session.commit()
+def configure_dynamic_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    def allocate(
+        _self: ProxyAllocator,
+        keys: list[str],
+        *,
+        region: str = "",
+    ) -> ProxyBatch:
+        prefix = {"KR": "10.1", "VN": "10.2"}.get(region, "10.0")
+        assignments = {
+            key: [f"http://{prefix}.{index + 1}.{attempt + 1}:7000" for attempt in range(3)]
+            for index, key in enumerate(keys)
+        }
+        return ProxyBatch(assignments, len(keys) * 3, len(keys) * 3, 0, 0)
 
-    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    configure_executor(monkeypatch, factory)
-    monkeypatch.setattr(
-        CardAllocator,
-        "select",
-        lambda _self, _count: (["test-card"], []),
+    monkeypatch.setattr(ProxyAllocator, "allocate", allocate)
+
+
+def local_extraction_result() -> KakaoExtractionResult:
+    return KakaoExtractionResult(
+        payment_url="https://web.nicepay.co.kr/payment/local",
+        checkout_session_id="checkout-local",
+        payment_method_id="pm-local",
+        stripe_redirect_url="https://checkout.stripe.com/local",
     )
-
-    mapping = pipeline_executor.PipelineExecutor("allocation-job", run.id)._allocate_cards(
-        [item.id]
-    )
-
-    with factory() as session:
-        allocation = session.get(PipelineCardAllocation, (run.id, card.id))
-        assert mapping == {item.id: "test-card"}
-        assert allocation is not None
-        assert allocation.allocated_count == 1
-        assert allocation.created_count == 0
 
 
 def test_first_registration_result_initializes_credential_metadata(
@@ -157,6 +149,7 @@ def test_pipeline_reports_canceled_when_canceled_during_execution(
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
+    configure_dynamic_proxies(monkeypatch)
 
     def cancel_item(*_args: object, **_kwargs: object) -> bool:
         with factory() as session:
@@ -173,77 +166,54 @@ def test_pipeline_reports_canceled_when_canceled_during_execution(
     assert result["status"] == "canceled"
 
 
-def test_kakao_submission_counts_created_and_duplicate_tasks_separately(
+def test_kakao_submission_persists_local_payment_link(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     email = "registered@example.com"
     run = PipelineRun(target_count=1, kakao_enabled=True, config_snapshot={})
-    batch = KakaoCardBatch(name="test")
     credential = Credential(email=email, access_token="access-token", metadata_json={})
     job = Job(id="kakao-job", kind="pipeline.run", payload={})
     db_session.add_all(
         [
             run,
-            batch,
             credential,
             job,
-            AppSetting(
-                key="kakao",
-                value={"base_url": "https://kakao.example.com", "timeout": 30},
-            ),
         ]
     )
     db_session.flush()
     item = PipelineItem(pipeline_run_id=run.id, position=0, account_email=email)
-    card = KakaoCard(batch_id=batch.id, code="test-card", position=0)
-    db_session.add_all([item, card])
-    db_session.flush()
-    allocation = PipelineCardAllocation(
-        pipeline_run_id=run.id,
-        card_id=card.id,
-        allocated_count=1,
-    )
-    db_session.add(allocation)
+    db_session.add(item)
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
     monkeypatch.setattr(
-        KakaoClient,
-        "check_eligibility",
-        lambda _self, _tokens: {"items": [{"index": 0, "eligible": True, "state": "eligible"}]},
-    )
-    monkeypatch.setattr(
-        KakaoClient,
-        "create_tasks",
-        lambda _self, **_kwargs: {
-            "tasks": [{"job_id": "created-job", "status": "queued"}],
-            "active_duplicates": [{"job_id": "duplicate-job", "status": "queued"}],
-        },
+        pipeline_kakao_executor,
+        "extract_payment_link",
+        lambda **_kwargs: local_extraction_result(),
     )
 
     pipeline_executor.PipelineExecutor(job.id, run.id)._run_kakao(
         item.id,
         {"email": email, "access_token": "access-token"},
-        card.code,
+        kr_proxy="http://10.1.1.1:7000",
+        vn_proxy="http://10.2.1.1:7000",
     )
 
     with factory() as session:
         saved_run = session.get(PipelineRun, run.id)
-        saved_allocation = session.get(PipelineCardAllocation, (run.id, card.id))
         saved_credential = session.get(Credential, email)
         tasks = session.query(KakaoTask).all()
         assert saved_run is not None
-        assert saved_allocation is not None
         assert saved_credential is not None
         assert saved_run.kakao_task_count == 1
-        assert saved_allocation.created_count == 1
-        assert saved_allocation.duplicate_count == 1
-        assert {task.upstream_job_id for task in tasks} == {"created-job", "duplicate-job"}
-        assert saved_credential.metadata_json["kakao_pipeline"]["job_ids"] == ["created-job"]
-        assert saved_credential.metadata_json["kakao_pipeline"]["active_duplicate_job_ids"] == [
-            "duplicate-job"
-        ]
+        assert len(tasks) == 1
+        assert tasks[0].payment_url == "https://web.nicepay.co.kr/payment/local"
+        assert tasks[0].upstream_payload["engine"] == "local-upi-1"
+        assert (
+            saved_credential.metadata_json["kakao_pipeline"]["payment_url"]
+            == tasks[0].payment_url
+        )
 
 
 def test_kakao_submission_skips_email_with_completed_claim(
@@ -272,16 +242,11 @@ def test_kakao_submission_skips_email_with_completed_claim(
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
 
-    def unexpected_call(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("已完成 Kakao 提取的邮箱不应再次调用上游")
-
-    monkeypatch.setattr(KakaoClient, "check_eligibility", unexpected_call)
-    monkeypatch.setattr(KakaoClient, "create_tasks", unexpected_call)
-
     pipeline_executor.PipelineExecutor(job.id, run.id)._run_kakao(
         item.id,
         {"email": email, "access_token": "access-token"},
-        "unused-card",
+        kr_proxy="http://10.1.1.1:7000",
+        vn_proxy="http://10.2.1.1:7000",
     )
 
     with factory() as session:
@@ -303,54 +268,36 @@ def test_kakao_pipeline_executes_existing_credentials(
         config_snapshot={},
         scheduled_count=1,
     )
-    batch = KakaoCardBatch(name="kakao executor")
     credential = Credential(email=email, access_token="access-token", metadata_json={})
     job = Job(id="kakao-pipeline-job", kind="pipeline.run", payload={})
     db_session.add_all(
         [
             run,
-            batch,
             credential,
             job,
-            AppSetting(
-                key="kakao",
-                value={"base_url": "https://kakao.example.com", "timeout": 30},
-            ),
         ]
     )
     db_session.flush()
-    card = KakaoCard(batch_id=batch.id, code="pipeline-card", position=0)
     item = PipelineItem(
         pipeline_run_id=run.id,
         position=0,
         account_email=email,
-        card_code_snapshot=card.code,
     )
-    db_session.add_all([card, item])
-    db_session.flush()
-    db_session.add(
-        PipelineCardAllocation(
-            pipeline_run_id=run.id,
-            card_id=card.id,
-            allocated_count=1,
-        )
-    )
+    db_session.add(item)
     db_session.commit()
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
-    monkeypatch.setattr(
-        KakaoClient,
-        "check_eligibility",
-        lambda _self, _tokens: {"items": [{"index": 0, "eligible": True, "state": "eligible"}]},
-    )
-    monkeypatch.setattr(
-        KakaoClient,
-        "create_tasks",
-        lambda _self, **_kwargs: {
-            "tasks": [{"job_id": "pipeline-created-job", "status": "queued"}]
-        },
-    )
+    configure_dynamic_proxies(monkeypatch)
+    attempted_pairs: list[tuple[str, str]] = []
+
+    def extract(**kwargs: object) -> KakaoExtractionResult:
+        attempted_pairs.append((str(kwargs["kr_proxy"]), str(kwargs["vn_proxy"])))
+        if len(attempted_pairs) == 1:
+            raise KakaoExtractionError("temporary proxy failure", category="proxy", retryable=True)
+        return local_extraction_result()
+
+    monkeypatch.setattr(pipeline_kakao_executor, "extract_payment_link", extract)
 
     result = pipeline_executor.PipelineExecutor(job.id, run.id).execute()
 
@@ -367,6 +314,17 @@ def test_kakao_pipeline_executes_existing_credentials(
         assert saved_item.status == PipelineItemStatus.COMPLETED
         assert task.pipeline_run_id == run.id
         assert task.pipeline_item_id == item.id
+        assert task.payment_url == "https://web.nicepay.co.kr/payment/local"
+        assert attempted_pairs == [
+            ("http://10.1.1.1:7000", "http://10.2.1.1:7000"),
+            ("http://10.1.1.2:7000", "http://10.2.1.2:7000"),
+        ]
+        attempts = list(
+            session.query(JobEvent)
+            .filter(JobEvent.job_id == job.id, JobEvent.event_type.like("proxy_attempt_%"))
+            .order_by(JobEvent.sequence)
+        )
+        assert [event.data["result"] for event in attempts] == ["failed", "succeeded"]
 
 
 def test_invalid_state_retries_with_a_fresh_registration_process(
@@ -386,6 +344,7 @@ def test_invalid_state_retries_with_a_fresh_registration_process(
     db_session.commit()
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
+    configure_dynamic_proxies(monkeypatch)
     monkeypatch.setattr(pipeline_executor.time, "sleep", lambda _seconds: None)
     attempts = 0
 
@@ -425,6 +384,7 @@ def test_pipeline_is_failed_when_every_registration_fails(
     db_session.commit()
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     configure_executor(monkeypatch, factory)
+    configure_dynamic_proxies(monkeypatch)
     monkeypatch.setattr(
         pipeline_executor,
         "_legacy_call",

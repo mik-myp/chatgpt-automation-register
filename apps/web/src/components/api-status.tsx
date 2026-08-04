@@ -19,8 +19,14 @@ export function ApiStatus() {
       : { label: `API ${health.data.version}`, color: "bg-emerald-500" }
 
   return (
-    <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground" role="status">
-      <span className={`size-2 rounded-full ${state.color}`} aria-hidden="true" />
+    <div
+      className="ml-auto flex items-center gap-2 text-xs text-muted-foreground"
+      role="status"
+    >
+      <span
+        className={`size-2 rounded-full ${state.color}`}
+        aria-hidden="true"
+      />
       <span>{state.label}</span>
     </div>
   )

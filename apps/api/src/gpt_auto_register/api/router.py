@@ -12,6 +12,7 @@ from gpt_auto_register.modules.results.operation_router import router as result_
 from gpt_auto_register.modules.results.router import router as results_router
 from gpt_auto_register.modules.settings.router import router as settings_router
 from gpt_auto_register.modules.setup.router import router as setup_router
+from gpt_auto_register.modules.users.router import router as users_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -27,4 +28,5 @@ protected_router.include_router(kakao_router)
 protected_router.include_router(result_operations_router)
 protected_router.include_router(results_router)
 protected_router.include_router(settings_router)
+protected_router.include_router(users_router)
 api_router.include_router(protected_router)

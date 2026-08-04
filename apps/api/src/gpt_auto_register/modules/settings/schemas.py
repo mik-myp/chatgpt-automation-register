@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class RegistrationSettings(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=50)
-    otp_timeout: int = Field(default=10, ge=1, le=300)
+    otp_timeout: int = Field(default=60, ge=1, le=300)
     allow_existing_login: bool = True
     password_mode: Literal["none", "random", "fixed"] = "random"
     fixed_password: str = Field(default="", max_length=256)
@@ -15,8 +15,6 @@ class RegistrationSettings(BaseModel):
     want_access_token: bool = True
     want_session_token: bool = True
     want_refresh_token: bool = True
-    proxy: str = ""
-    proxy_pool: str = ""
 
     @model_validator(mode="after")
     def validate_fixed_password(self) -> "RegistrationSettings":
@@ -26,11 +24,45 @@ class RegistrationSettings(BaseModel):
 
 
 class KakaoSettings(BaseModel):
+    # Kept for reading historical settings; local extraction does not use the old service.
     base_url: str = ""
     timeout: int = Field(default=30, ge=5, le=300)
+    poll_timeout: int = Field(default=120, ge=30, le=300)
+    verify_proxy_countries: bool = True
     card_usage_limit: int = Field(default=10, ge=1, le=1000)
     plan_type: Literal["plus"] = "plus"
-    promo_code: str = ""
+    promo_code: str = "plus-1-month-free"
+
+
+PipelineStep = Literal["registration", "account_security", "kakao"]
+
+
+def default_pipeline_order() -> list[PipelineStep]:
+    return ["registration", "account_security", "kakao"]
+
+
+class ProxySettings(BaseModel):
+    api_url: str = ""
+    max_attempts_per_account: int = Field(default=3, ge=1, le=10)
+    request_timeout: int = Field(default=30, ge=5, le=120)
+
+
+class PipelineSettings(BaseModel):
+    step_order: list[PipelineStep] = Field(
+        default_factory=default_pipeline_order
+    )
+    registration_task_concurrency: int = Field(default=1, ge=1, le=20)
+    account_security_task_concurrency: int = Field(default=1, ge=1, le=20)
+    kakao_task_concurrency: int = Field(default=1, ge=1, le=20)
+    account_security_email_concurrency: int = Field(default=10, ge=1, le=50)
+    kakao_email_concurrency: int = Field(default=10, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_step_order(self) -> "PipelineSettings":
+        expected = {"registration", "account_security", "kakao"}
+        if len(self.step_order) != 3 or set(self.step_order) != expected:
+            raise ValueError("流水线步骤顺序必须且只能包含注册、设置密码与 MFA、Kakao")
+        return self
 
 
 class MailSettings(BaseModel):
@@ -149,6 +181,8 @@ class MaintenanceSettings(BaseModel):
 
 class SystemSettingsResponse(BaseModel):
     registration: RegistrationSettings
+    proxy: ProxySettings
+    pipeline: PipelineSettings
     mail: MailSettings
     kakao: KakaoSettings
     sms: SmsSettings
@@ -190,6 +224,8 @@ class ExportSettingsUpdate(BaseModel):
 
 class SystemSettingsUpdate(BaseModel):
     registration: RegistrationSettings
+    proxy: ProxySettings = Field(default_factory=ProxySettings)
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     mail: MailSettingsUpdate
     kakao: KakaoSettings
     sms: SmsSettingsUpdate

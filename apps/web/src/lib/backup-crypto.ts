@@ -26,7 +26,11 @@ function toBuffer(value: Uint8Array) {
   return value.slice().buffer as ArrayBuffer
 }
 
-async function deriveKey(passphrase: string, salt: Uint8Array, iterations: number) {
+async function deriveKey(
+  passphrase: string,
+  salt: Uint8Array,
+  iterations: number
+) {
   if (!passphrase) throw new Error("请输入备份口令")
   const material = await crypto.subtle.importKey(
     "raw",
@@ -58,7 +62,11 @@ export async function encryptBackup(value: unknown, passphrase: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const key = await deriveKey(passphrase, salt, ITERATIONS)
   const plaintext = new TextEncoder().encode(JSON.stringify(value))
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext)
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    plaintext
+  )
   return {
     format: ENCRYPTED_FORMAT,
     version: 1,
@@ -70,7 +78,10 @@ export async function encryptBackup(value: unknown, passphrase: string) {
   } satisfies EncryptedBackup
 }
 
-export async function decryptBackup(value: EncryptedBackup, passphrase: string) {
+export async function decryptBackup(
+  value: EncryptedBackup,
+  passphrase: string
+) {
   try {
     const salt = fromBase64(value.salt)
     const iv = fromBase64(value.iv)

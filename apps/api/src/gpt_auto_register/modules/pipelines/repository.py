@@ -28,6 +28,7 @@ from gpt_auto_register.db.models.pipeline import (
 )
 from gpt_auto_register.db.result import affected_rows
 from gpt_auto_register.modules.kakao.state import require_extraction_claim
+from gpt_auto_register.modules.settings.service import SettingsService
 
 
 class PipelineRepository:
@@ -37,6 +38,41 @@ class PipelineRepository:
     def get(self, run_id: str) -> PipelineRun | None:
         return self.session.get(PipelineRun, run_id)
 
+    def _queue_job(
+        self,
+        *,
+        kind: str,
+        run: PipelineRun,
+        payload: dict[str, object],
+        max_attempts: int,
+    ) -> Job:
+        order = SettingsService(self.session).pipeline_internal().step_order
+        run_step = "kakao" if run.kind == PipelineRunKind.KAKAO else (
+            "account_security" if run.kind == PipelineRunKind.ACCOUNT_SECURITY else "registration"
+        )
+        priorities: dict[str, int] = {
+            step: 30 - index * 10 for index, step in enumerate(order)
+        }
+        job = Job(
+            kind=kind,
+            pipeline_run_id=run.id,
+            payload=payload,
+            max_attempts=max_attempts,
+            priority=priorities[run_step],
+        )
+        self.session.add(job)
+        self.session.flush()
+        self.session.add(
+            JobEvent(
+                job_id=job.id,
+                sequence=1,
+                event_type="task_queued",
+                message=f"任务已排队，步骤 {run_step}",
+                data={"task_type": run_step, "step_order": order},
+            )
+        )
+        return job
+
     def create(
         self,
         *,
@@ -45,7 +81,6 @@ class PipelineRepository:
         email: str | None,
         kakao_enabled: bool,
         config_snapshot: dict[str, object],
-        card_slots: list[str] | None = None,
     ) -> PipelineRun:
         run = PipelineRun(
             mode=mode,
@@ -61,20 +96,15 @@ class PipelineRepository:
                 pipeline_run_id=run.id,
                 position=position,
                 account_email=email if position == 0 else None,
-                card_code_snapshot=(card_slots or [])[position] if card_slots else None,
             )
             for position in range(target_count)
         ]
         self.session.add_all(items)
-        if card_slots:
-            self._reserve_cards(run.id, card_slots)
-        self.session.add(
-            Job(
-                kind="pipeline.run",
-                pipeline_run_id=run.id,
-                payload={"pipeline_run_id": run.id},
-                max_attempts=3,
-            )
+        self._queue_job(
+            kind="pipeline.run",
+            run=run,
+            payload={"pipeline_run_id": run.id},
+            max_attempts=3,
         )
         self.session.flush()
         return run
@@ -84,15 +114,22 @@ class PipelineRepository:
         *,
         source_run_id: str | None,
         emails: list[str],
-        card_slots: list[str],
     ) -> PipelineRun:
+        settings = SettingsService(self.session)
+        pipeline = settings.pipeline_internal()
+        proxy = settings.proxy_internal()
         run = PipelineRun(
             kind=PipelineRunKind.KAKAO,
             source_pipeline_run_id=source_run_id,
             mode="kakao",
             target_count=len(emails),
             kakao_enabled=True,
-            config_snapshot={"action": "create_kakao_tasks"},
+            config_snapshot={
+                "action": "create_kakao_tasks",
+                "step_order": pipeline.step_order,
+                "email_concurrency": pipeline.kakao_email_concurrency,
+                "proxy_max_attempts": proxy.max_attempts_per_account,
+            },
             scheduled_count=len(emails),
         )
         self.session.add(run)
@@ -102,7 +139,6 @@ class PipelineRepository:
                 pipeline_run_id=run.id,
                 position=position,
                 account_email=email,
-                card_code_snapshot=card_slots[position],
             )
             for position, email in enumerate(emails)
         ]
@@ -115,14 +151,11 @@ class PipelineRepository:
                 run.id,
                 item.id,
             )
-        self._reserve_cards(run.id, card_slots)
-        self.session.add(
-            Job(
-                kind="pipeline.run",
-                pipeline_run_id=run.id,
-                payload={"pipeline_run_id": run.id},
-                max_attempts=3,
-            )
+        self._queue_job(
+            kind="pipeline.run",
+            run=run,
+            payload={"pipeline_run_id": run.id},
+            max_attempts=3,
         )
         self.session.flush()
         return run
@@ -152,13 +185,21 @@ class PipelineRepository:
         source_run_id: str | None,
         emails: list[str],
     ) -> PipelineRun:
+        settings = SettingsService(self.session)
+        pipeline = settings.pipeline_internal()
+        proxy = settings.proxy_internal()
         run = PipelineRun(
             kind=PipelineRunKind.ACCOUNT_SECURITY,
             source_pipeline_run_id=source_run_id,
             mode="security",
             target_count=len(emails),
             kakao_enabled=False,
-            config_snapshot={"action": "set_password_and_mfa"},
+            config_snapshot={
+                "action": "set_password_and_mfa",
+                "step_order": pipeline.step_order,
+                "email_concurrency": pipeline.account_security_email_concurrency,
+                "proxy_max_attempts": proxy.max_attempts_per_account,
+            },
             scheduled_count=len(emails),
         )
         self.session.add(run)
@@ -173,18 +214,16 @@ class PipelineRepository:
             )
             for position, email in enumerate(emails)
         )
-        self.session.add(
-            Job(
-                kind="account.security",
-                pipeline_run_id=run.id,
-                payload={
-                    "action": "set_password_and_mfa",
-                    "emails": emails,
-                    "pipeline_run_id": run.id,
-                    "source_pipeline_run_id": source_run_id or "",
-                },
-                max_attempts=1,
-            )
+        self._queue_job(
+            kind="account.security",
+            run=run,
+            payload={
+                "action": "set_password_and_mfa",
+                "emails": emails,
+                "pipeline_run_id": run.id,
+                "source_pipeline_run_id": source_run_id or "",
+            },
+            max_attempts=1,
         )
         self.session.flush()
         return run

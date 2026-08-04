@@ -3,30 +3,65 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gpt_auto_register.core.encryption import secret_fingerprint
 from gpt_auto_register.db.base import utc_now
 from gpt_auto_register.db.models.accounts import Credential
-from gpt_auto_register.db.models.kakao import KakaoCard, KakaoTask, PipelineCardAllocation
+from gpt_auto_register.db.models.kakao import KakaoTask, KakaoTaskStatus
 from gpt_auto_register.db.models.pipeline import (
     PipelineItem,
     PipelineItemStatus,
     PipelineRun,
     PipelineStatus,
 )
-from gpt_auto_register.db.result import affected_rows
-from gpt_auto_register.modules.kakao.client import KakaoClient, payload_tasks
+from gpt_auto_register.modules.kakao.local_service import (
+    KakaoExtractionError,
+    extract_payment_link,
+)
 from gpt_auto_register.modules.kakao.state import (
     KakaoClaimConflictError,
-    apply_upstream,
     completed_extraction_emails,
+    mark_extraction_completed,
+    release_extraction_claim,
     require_extraction_claim,
 )
 from gpt_auto_register.modules.settings.service import SettingsService
 from gpt_auto_register.worker.executor_support import emit as _emit
+from gpt_auto_register.worker.proxy_service import ProxyAllocator, ProxyApiError, emit_proxy_attempt
+
+ProxyPair = tuple[str, str]
+
+
+def pair_kakao_proxy_assignments(
+    item_ids: list[str],
+    kr_assignments: dict[str, list[str]],
+    vn_assignments: dict[str, list[str]],
+) -> tuple[dict[str, list[ProxyPair]], dict[str, str]]:
+    assignments: dict[str, list[ProxyPair]] = {}
+    failures: dict[str, str] = {}
+    reserved: set[str] = set()
+    for item_id in item_ids:
+        kr_values = kr_assignments.get(item_id, [])
+        vn_values = vn_assignments.get(item_id, [])
+        values = [*kr_values, *vn_values]
+        if not kr_values or len(kr_values) != len(vn_values):
+            failures[item_id] = "Kakao KR/VN 代理对数量不足"
+            reserved.update(values)
+            continue
+        if len(set(values)) != len(values):
+            failures[item_id] = "Kakao 账号预分配的 KR/VN 代理存在重复"
+            reserved.update(values)
+            continue
+        if reserved.intersection(values):
+            failures[item_id] = "Kakao 账号预分配代理已被前序账号占用"
+            reserved.update(values)
+            continue
+        reserved.update(values)
+        assignments[item_id] = list(zip(kr_values, vn_values, strict=True))
+    return assignments, failures
 
 
 class KakaoPipelineExecutorMixin:
@@ -34,26 +69,49 @@ class KakaoPipelineExecutorMixin:
     run_id: str
     _session_factory: Callable[[], Session]
 
-    def _allocate_cards(self, item_ids: list[str]) -> dict[str, str]:
-        raise NotImplementedError
-
     def _wait_until_runnable(self) -> bool:
         raise NotImplementedError
 
-    def _record_kakao_failure(self, card_code: str) -> None:
-        raise NotImplementedError
-
     def _execute_kakao_pipeline(self, item_ids: list[str]) -> dict[str, Any]:
-        _emit(self.job_id, "pipeline_started", "Kakao 流水线开始执行")
-        card_codes = self._allocate_cards(item_ids)
-        with ThreadPoolExecutor(max_workers=min(10, len(item_ids) or 1)) as executor:
-            futures = {
-                executor.submit(
-                    self._execute_kakao_item,
+        _emit(self.job_id, "pipeline_started", "Kakao 本地提取任务开始执行")
+        with self._session_factory() as session:
+            settings = SettingsService(session)
+            proxy_settings = settings.proxy_internal()
+            concurrency = settings.pipeline_internal().kakao_email_concurrency
+
+        allocator = ProxyAllocator(
+            proxy_settings,
+            self._session_factory,
+            self.job_id,
+            "kakao",
+        )
+        try:
+            kr_batch = allocator.allocate(item_ids, region="KR")
+            vn_batch = allocator.allocate(item_ids, region="VN")
+        except ProxyApiError:
+            kr_batch = vn_batch = None
+
+        assignments: dict[str, list[ProxyPair]] = {}
+        assignment_failures: dict[str, str] = {}
+        if kr_batch is not None and vn_batch is not None:
+            assignments, assignment_failures = pair_kakao_proxy_assignments(
+                item_ids,
+                kr_batch.assignments,
+                vn_batch.assignments,
+            )
+
+        runnable = [item_id for item_id in item_ids if item_id in assignments]
+        for item_id in item_ids:
+            if item_id not in assignments:
+                self._save_kakao_proxy_shortage(
                     item_id,
-                    card_codes[item_id],
-                ): item_id
-                for item_id in item_ids
+                    assignment_failures.get(item_id, "Kakao KR/VN 代理对数量不足"),
+                )
+
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(runnable) or 1)) as executor:
+            futures = {
+                executor.submit(self._execute_kakao_item, item_id, assignments[item_id]): item_id
+                for item_id in runnable
             }
             for future in as_completed(futures):
                 try:
@@ -94,13 +152,8 @@ class KakaoPipelineExecutorMixin:
         _emit(
             self.job_id,
             "pipeline_finished",
-            f"Kakao 流水线执行完成：完成 {completed}，跳过 {skipped}，失败 {failed}",
-            data={
-                "completed": completed,
-                "skipped": skipped,
-                "failed": failed,
-                "tasks": created,
-            },
+            f"Kakao 本地提取完成：成功 {completed}，跳过 {skipped}，失败 {failed}",
+            data={"completed": completed, "skipped": skipped, "failed": failed, "tasks": created},
         )
         return {
             "status": final_status,
@@ -110,7 +163,7 @@ class KakaoPipelineExecutorMixin:
             "tasks": created,
         }
 
-    def _execute_kakao_item(self, item_id: str, card_code: str) -> None:
+    def _execute_kakao_item(self, item_id: str, proxy_pairs: list[ProxyPair]) -> None:
         if not self._wait_until_runnable():
             return
         with self._session_factory() as session:
@@ -121,41 +174,71 @@ class KakaoPipelineExecutorMixin:
                 return
             credential = session.get(Credential, item.account_email)
             if credential is None or not credential.access_token:
+                reason = "前置条件不满足：账号缺少 Access Token"
                 item.status = PipelineItemStatus.FAILED
-                item.error = "注册结果缺少 Access Token"
+                item.error = reason
                 session.commit()
+                self._emit_prerequisite_failure(item_id, item.account_email, reason)
                 return
             email = item.account_email
-            credential_value = {
-                "email": credential.email,
-                "access_token": credential.access_token,
-            }
+            access_token = str(credential.access_token)
             item.status = PipelineItemStatus.SUBMITTING
             item.error = None
             session.commit()
-        try:
-            self._run_kakao(item_id, credential_value, card_code)
-        except Exception as error:
-            self._record_kakao_failure(card_code)
-            with self._session_factory() as session:
-                session.execute(
-                    update(PipelineItem)
-                    .where(
-                        PipelineItem.id == item_id,
-                        PipelineItem.pipeline_run_id.in_(
-                            select(PipelineRun.id).where(
-                                PipelineRun.id == self.run_id,
-                                PipelineRun.status != PipelineStatus.CANCELED,
-                            )
-                        ),
-                    )
-                    .values(status=PipelineItemStatus.FAILED, error=str(error))
+
+        last_error: Exception | None = None
+        for attempt, (kr_proxy, vn_proxy) in enumerate(proxy_pairs, start=1):
+            started_at = utc_now()
+            proxy_label = f"KR={kr_proxy} | VN={vn_proxy}"
+            try:
+                self._run_kakao(
+                    item_id,
+                    {"email": email, "access_token": access_token},
+                    kr_proxy=kr_proxy,
+                    vn_proxy=vn_proxy,
                 )
-                session.commit()
+                emit_proxy_attempt(
+                    self._session_factory,
+                    self.job_id,
+                    email=email,
+                    item_id=item_id,
+                    step="kakao",
+                    attempt=attempt,
+                    proxy=proxy_label,
+                    started_at=started_at,
+                    succeeded=True,
+                )
+                return
+            except Exception as error:
+                last_error = error
+                emit_proxy_attempt(
+                    self._session_factory,
+                    self.job_id,
+                    email=email,
+                    item_id=item_id,
+                    step="kakao",
+                    attempt=attempt,
+                    proxy=proxy_label,
+                    started_at=started_at,
+                    succeeded=False,
+                    error=str(error),
+                )
+                if isinstance(error, KakaoExtractionError) and not error.retryable:
+                    break
+                if attempt < len(proxy_pairs):
+                    _emit(
+                        self.job_id,
+                        "kakao_retry",
+                        f"Kakao 提取失败，切换到第 {attempt + 1} 个预分配 KR/VN 代理对",
+                        level="warning",
+                        data={"item_id": item_id, "email": email},
+                    )
+        if last_error is not None:
+            self._save_kakao_failure(item_id, str(last_error))
             _emit(
                 self.job_id,
                 "kakao_item_failed",
-                f"Kakao 任务提交失败 {email}: {error}",
+                f"Kakao 支付链接提取失败 {email}: {last_error}",
                 level="error",
                 data={"item_id": item_id, "email": email},
             )
@@ -164,19 +247,20 @@ class KakaoPipelineExecutorMixin:
         self,
         item_id: str,
         credential: dict[str, Any],
-        card_code: str,
+        *,
+        kr_proxy: str,
+        vn_proxy: str,
     ) -> None:
         access_token = str(credential.get("access_token") or "")
-        if not access_token:
-            raise RuntimeError("注册结果缺少 Access Token")
+        email = str(credential.get("email") or "").strip().lower()
         with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
-            email = item.account_email if item is not None else str(credential.get("email") or "")
-            if email and email.strip().lower() in completed_extraction_emails(session, [email]):
-                if item is not None:
-                    item.status = PipelineItemStatus.COMPLETED
-                    item.eligibility_state = "already_extracted"
-                    item.error = None
+            if item is None:
+                raise RuntimeError("Kakao 流水线账号不存在")
+            if email in completed_extraction_emails(session, [email]):
+                item.status = PipelineItemStatus.COMPLETED
+                item.eligibility_state = "already_extracted"
+                item.error = None
                 session.commit()
                 _emit(
                     self.job_id,
@@ -186,12 +270,11 @@ class KakaoPipelineExecutorMixin:
                 )
                 return
             try:
-                require_extraction_claim(session, email or "", self.run_id, item_id)
+                require_extraction_claim(session, email, self.run_id, item_id)
             except KakaoClaimConflictError:
-                if item is not None:
-                    item.status = PipelineItemStatus.COMPLETED
-                    item.eligibility_state = "already_active"
-                    item.error = None
+                item.status = PipelineItemStatus.SKIPPED
+                item.eligibility_state = "already_active"
+                item.error = "邮箱已有活动的 Kakao 提取任务"
                 session.commit()
                 _emit(
                     self.job_id,
@@ -201,174 +284,127 @@ class KakaoPipelineExecutorMixin:
                 )
                 return
             settings = SettingsService(session).kakao_internal()
-            card = session.scalar(
-                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
+            task = session.scalar(select(KakaoTask).where(KakaoTask.pipeline_item_id == item_id))
+            if task is None:
+                task = KakaoTask(
+                    upstream_job_id=f"local:{uuid4()}",
+                    pipeline_run_id=self.run_id,
+                    pipeline_item_id=item_id,
+                    email=email,
+                    status=KakaoTaskStatus.EXTRACTING,
+                    payment_status="extracting",
+                    upstream_payload={"engine": "local-upi-1"},
+                )
+                session.add(task)
+                run = session.get(PipelineRun, self.run_id)
+                if run is not None:
+                    run.kakao_task_count = (run.kakao_task_count or 0) + 1
+            else:
+                task.status = KakaoTaskStatus.EXTRACTING
+                task.payment_status = "extracting"
+                task.error = None
+            session.commit()
+
+        def extraction_log(message: str, level: str) -> None:
+            _emit(
+                self.job_id,
+                "kakao_step_log",
+                message,
+                level=level,
+                data={"item_id": item_id, "email": email},
             )
-            if card is None:
-                raise RuntimeError("已分配卡密不存在")
-        client = KakaoClient(settings.base_url, settings.timeout)
-        eligibility = payload_tasks(client.check_eligibility([access_token]))
-        eligible = next((item for item in eligibility if item.get("index") in (0, "0")), None)
-        if eligible is None and eligibility:
-            eligible = eligibility[0]
-        eligible_payload = eligible or {}
-        eligibility_state = str(eligible_payload.get("state") or "unknown")
-        eligibility_error = str(eligible_payload.get("error") or "")
-        is_eligible = (
-            bool(eligible_payload)
-            and eligible_payload.get("eligible") is True
-            and eligibility_state == "eligible"
-            and not eligibility_error
+
+        result = extract_payment_link(
+            access_token=access_token,
+            email=email,
+            kr_proxy=kr_proxy,
+            vn_proxy=vn_proxy,
+            request_timeout=settings.timeout,
+            poll_timeout=settings.poll_timeout,
+            promo_id=settings.promo_code,
+            stop_event=getattr(self, "_cancel_event", None),
+            log=extraction_log,
+            verify_proxy_countries=settings.verify_proxy_countries,
         )
-        if not self._wait_until_runnable():
-            return
-        if not is_eligible:
-            with self._session_factory() as session:
-                item = session.get(PipelineItem, item_id)
-                if item is not None:
-                    changed = affected_rows(
-                        session.execute(
-                            update(PipelineItem)
-                            .where(
-                                PipelineItem.id == item_id,
-                                PipelineItem.pipeline_run_id.in_(
-                                    select(PipelineRun.id).where(
-                                        PipelineRun.id == self.run_id,
-                                        PipelineRun.status != PipelineStatus.CANCELED,
-                                    )
-                                ),
-                            )
-                            .values(
-                                status=PipelineItemStatus.SKIPPED,
-                                eligibility_state=eligibility_state,
-                                error=eligibility_error or None,
-                            )
-                        )
-                    )
-                    saved = session.get(Credential, item.account_email)
-                    if changed and saved is not None:
-                        saved.metadata_json = {
-                            **(saved.metadata_json or {}),
-                            "kakao_pipeline": {
-                                "status": "skipped",
-                                "eligible": False,
-                                "state": eligibility_state,
-                                "error": eligibility_error,
-                                "checked_at": utc_now().isoformat(),
-                                "job_ids": [],
-                                "active_duplicate_job_ids": [],
-                            },
-                        }
-                session.commit()
-            return
-        payload = client.create_tasks(
-            card=card_code,
-            access_tokens=[access_token],
-            plan_type=settings.plan_type,
-            promo_code=settings.promo_code,
-        )
-        if isinstance(payload, dict):
-            raw_tasks: list[object] = (
-                [payload] if payload.get("job_id") or payload.get("id") else []
-            )
-            if not raw_tasks:
-                for key in ("tasks", "items", "results"):
-                    value = payload.get(key)
-                    if isinstance(value, list):
-                        raw_tasks = [*raw_tasks, *value]
-            raw_duplicates = payload.get("active_duplicates")
-            tasks = (
-                [item for item in raw_tasks if isinstance(item, dict)]
-                if isinstance(raw_tasks, list)
-                else []
-            )
-            duplicates = (
-                [item for item in raw_duplicates if isinstance(item, dict)]
-                if isinstance(raw_duplicates, list)
-                else []
-            )
-        else:
-            tasks = payload_tasks(payload)
-            duplicates = []
-        task_ids = [str(task.get("job_id") or task.get("id") or "") for task in tasks]
-        duplicate_ids = [str(task.get("job_id") or task.get("id") or "") for task in duplicates]
-        task_ids = [value for value in task_ids if value]
-        duplicate_ids = [value for value in duplicate_ids if value]
-        if not task_ids and not duplicate_ids:
-            raise RuntimeError("Kakao 创建接口未返回任务 ID，未将该账号标记为完成")
+
         with self._session_factory() as session:
             item = session.get(PipelineItem, item_id)
+            task = session.scalar(select(KakaoTask).where(KakaoTask.pipeline_item_id == item_id))
             run = session.get(PipelineRun, self.run_id)
-            card = session.scalar(
-                select(KakaoCard).where(KakaoCard.code_fingerprint == secret_fingerprint(card_code))
-            )
-            if item is None or run is None or card is None:
+            if item is None or task is None or run is None or run.status == PipelineStatus.CANCELED:
                 return
-            for task in [*tasks, *duplicates]:
-                upstream_id = str(task.get("job_id") or task.get("id") or "")
-                if not upstream_id:
-                    continue
-                existing = session.scalar(
-                    select(KakaoTask).where(KakaoTask.upstream_job_id == upstream_id)
-                )
-                if existing is None:
-                    saved_task = KakaoTask(
-                        upstream_job_id=upstream_id,
-                        pipeline_run_id=self.run_id,
-                        pipeline_item_id=item_id,
-                        card_id=card.id,
-                        card_code_snapshot=card.code,
-                        email=item.account_email or "",
-                    )
-                    session.add(saved_task)
-                    apply_upstream(saved_task, task, session)
-            allocation = session.get(
-                PipelineCardAllocation,
-                (self.run_id, card.id),
-            )
-            if allocation is not None:
-                allocation.created_count = (allocation.created_count or 0) + len(task_ids)
-                allocation.duplicate_count = (allocation.duplicate_count or 0) + len(duplicate_ids)
-            run.kakao_task_count = (run.kakao_task_count or 0) + len(task_ids)
-            session.execute(
-                update(PipelineItem)
-                .where(
-                    PipelineItem.id == item_id,
-                    PipelineItem.pipeline_run_id.in_(
-                        select(PipelineRun.id).where(
-                            PipelineRun.id == self.run_id,
-                            PipelineRun.status != PipelineStatus.CANCELED,
-                        )
-                    ),
-                )
-                .values(status=PipelineItemStatus.COMPLETED, error=None)
-            )
-            item.eligibility_state = eligibility_state
-            saved = session.get(Credential, item.account_email)
-            if saved is not None:
-                saved.metadata_json = {
-                    **(saved.metadata_json or {}),
+            task.status = KakaoTaskStatus.DONE
+            task.payment_status = "ready"
+            task.payment_url = result.payment_url
+            task.error = None
+            task.upstream_payload = {"engine": "local-upi-1", **result.as_payload()}
+            mark_extraction_completed(session, task)
+            item.status = PipelineItemStatus.COMPLETED
+            item.eligibility_state = "eligible"
+            item.error = None
+            credential_row = session.get(Credential, email)
+            if credential_row is not None:
+                credential_row.metadata_json = {
+                    **(credential_row.metadata_json or {}),
                     "kakao_pipeline": {
-                        "status": (
-                            "created" if task_ids else "duplicate" if duplicate_ids else "submitted"
-                        ),
+                        "status": "completed",
                         "eligible": True,
-                        "state": eligibility_state,
+                        "state": "eligible",
                         "error": "",
                         "checked_at": utc_now().isoformat(),
-                        "job_ids": task_ids,
-                        "active_duplicate_job_ids": duplicate_ids,
-                        "card_id": card.id,
+                        "job_ids": [task.upstream_job_id],
+                        "payment_url": result.payment_url,
+                        "engine": "local-upi-1",
                     },
                 }
             session.commit()
         _emit(
             self.job_id,
-            "kakao_submitted",
-            f"Kakao 任务已提交：新建 {len(task_ids)}，执行中重复 {len(duplicate_ids)}",
-            data={
-                "item_id": item_id,
-                "created": len(task_ids),
-                "duplicates": len(duplicate_ids),
-            },
+            "kakao_payment_link_extracted",
+            f"Kakao 支付链接提取成功 {email}",
+            data={"item_id": item_id, "email": email, "payment_url": result.payment_url},
+        )
+
+    def _save_kakao_failure(self, item_id: str, reason: str) -> None:
+        with self._session_factory() as session:
+            item = session.get(PipelineItem, item_id)
+            task = session.scalar(select(KakaoTask).where(KakaoTask.pipeline_item_id == item_id))
+            if item is not None:
+                item.status = PipelineItemStatus.FAILED
+                item.error = reason
+            if task is not None:
+                task.status = KakaoTaskStatus.FAILED
+                task.payment_status = "failed"
+                task.error = reason
+                task.upstream_payload = {
+                    **(task.upstream_payload or {}),
+                    "failure_reason": reason,
+                }
+                release_extraction_claim(session, task)
+            session.commit()
+
+    def _emit_prerequisite_failure(self, item_id: str, email: str, reason: str) -> None:
+        _emit(
+            self.job_id,
+            "kakao_prerequisite_failed",
+            reason,
+            level="error",
+            data={"item_id": item_id, "email": email, "step": "kakao"},
+        )
+
+    def _save_kakao_proxy_shortage(self, item_id: str, detail: str) -> None:
+        reason = f"{detail}，账号未开始执行"
+        with self._session_factory() as session:
+            item = session.get(PipelineItem, item_id)
+            if item is None:
+                return
+            item.status = PipelineItemStatus.FAILED
+            item.error = reason
+            session.commit()
+        _emit(
+            self.job_id,
+            "item_proxy_insufficient",
+            reason,
+            level="error",
+            data={"item_id": item_id, "step": "kakao"},
         )
