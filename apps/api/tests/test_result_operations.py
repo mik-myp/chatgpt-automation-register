@@ -1,10 +1,12 @@
 import threading
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from gpt_auto_register.db.models.accounts import Credential, OutlookAccount
 from gpt_auto_register.db.models.jobs import Job, JobStatus
+from gpt_auto_register.db.models.pipeline import PipelineItem
 from gpt_auto_register.worker import result_operations
 
 
@@ -189,3 +191,46 @@ def test_plus_check_accepts_pipeline_run_scope_without_explicit_emails(
     assert job.payload["pipeline_run_id"] == "security-run-id"
     assert job.payload["emails"] == []
     assert job.payload["all"] is False
+
+
+def test_result_operation_email_query_is_postgresql_compatible_and_deduplicated(
+    db_session: Session,
+) -> None:
+    email = "duplicate@example.com"
+    db_session.add(Credential(email=email, metadata_json={}))
+    db_session.add_all(
+        [
+            PipelineItem(pipeline_run_id="run-id", position=0, account_email=email),
+            PipelineItem(pipeline_run_id="run-id", position=1, account_email=email),
+        ]
+    )
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        emails = result_operations.ResultOperationExecutor(
+            "missing-job",
+            {"pipeline_run_id": "run-id"},
+            threading.Event(),
+            factory,
+        )._resolve_emails()
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", capture_statement)
+
+    assert emails == [email]
+    credential_query = next(
+        statement for statement in statements if "SELECT DISTINCT credentials.email" in statement
+    )
+    assert "credentials.created_at" in credential_query.split("FROM credentials", maxsplit=1)[0]

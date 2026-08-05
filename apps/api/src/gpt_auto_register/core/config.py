@@ -8,9 +8,10 @@ from sqlalchemy.engine import make_url
 
 API_ROOT = Path(__file__).resolve().parents[3]
 REPOSITORY_ROOT = API_ROOT.parents[1]
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_PATH = API_ROOT / "data"
 DEFAULT_DATABASE_PATH = DEFAULT_DATA_PATH / "gpt-auto-register.db"
-DEFAULT_LEGACY_RUNTIME_PATH = API_ROOT / "src" / "gpt_auto_register" / "runtime"
+DEFAULT_LEGACY_RUNTIME_PATH = PACKAGE_ROOT / "runtime"
 
 
 class Settings(BaseSettings):
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "GPT Auto Register"
-    app_version: str = "0.3.0"
+    app_version: str = "0.3.1"
     environment: Literal["development", "test", "production"] = "development"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)

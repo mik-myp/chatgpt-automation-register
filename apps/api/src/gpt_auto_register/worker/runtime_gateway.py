@@ -20,6 +20,7 @@ RuntimeAction = Literal[
     "export_test",
     "mail_test",
     "register",
+    "refresh_authorization",
     "set_password",
     "sms_countries",
     "sms_test",

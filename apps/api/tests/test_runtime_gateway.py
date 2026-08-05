@@ -4,9 +4,23 @@ import threading
 
 import pytest
 
+from gpt_auto_register.core.config import DEFAULT_LEGACY_RUNTIME_PATH, PACKAGE_ROOT
 from gpt_auto_register.worker import legacy_runner
 from gpt_auto_register.worker.legacy_runner import RESULT_PREFIX
-from gpt_auto_register.worker.runtime_gateway import RuntimeCanceledError, runtime_call
+from gpt_auto_register.worker.runtime_gateway import (
+    SUPPORTED_ACTIONS,
+    RuntimeCanceledError,
+    runtime_call,
+)
+
+
+def test_default_legacy_runtime_path_uses_installed_package() -> None:
+    assert DEFAULT_LEGACY_RUNTIME_PATH == PACKAGE_ROOT / "runtime"
+    assert (DEFAULT_LEGACY_RUNTIME_PATH / "auth_flow.py").is_file()
+
+
+def test_runtime_gateway_allows_authorization_refresh() -> None:
+    assert "refresh_authorization" in SUPPORTED_ACTIONS
 
 
 def test_runtime_gateway_rejects_unknown_action_before_starting_process() -> None:

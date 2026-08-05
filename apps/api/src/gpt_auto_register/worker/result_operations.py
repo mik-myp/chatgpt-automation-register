@@ -72,7 +72,11 @@ class ResultOperationExecutor:
             if str(email).strip()
         ]
         with self._session_factory() as session:
-            query = select(Credential.email).distinct().order_by(Credential.created_at.desc())
+            query = (
+                select(Credential.email, Credential.created_at)
+                .distinct()
+                .order_by(Credential.created_at.desc(), Credential.email)
+            )
             pipeline_run_id = str(self.payload.get("pipeline_run_id") or "")
             if pipeline_run_id:
                 query = query.join(
