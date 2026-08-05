@@ -184,9 +184,8 @@ class ProxyAllocator:
                 continue
             if normalized in seen:
                 duplicate_count += 1
-                proxy_slots.append(None)
-                continue
-            seen.add(normalized)
+            else:
+                seen.add(normalized)
             proxy_slots.append(normalized)
 
         assignments: dict[str, list[str]] = {}
@@ -195,14 +194,14 @@ class ProxyAllocator:
             group = proxy_slots[start : start + attempts]
             if len(group) == attempts and all(group):
                 assignments[key] = [str(proxy) for proxy in group]
-        valid_count = len(seen)
+        valid_count = sum(proxy is not None for proxy in proxy_slots)
         level = "info" if len(assignments) == len(keys) else "error"
         message = (
-            f"代理 API 返回 {valid_count}/{requested} 个有效唯一代理"
+            f"代理 API 返回 {valid_count}/{requested} 个有效代理位置"
             if level == "info"
             else (
                 f"代理数量不足或存在无效位置：需要 {requested}，"
-                f"API 返回 {len(proxy_slots)} 项，其中有效唯一代理 {valid_count} 个"
+                f"API 返回 {len(proxy_slots)} 项，其中有效代理位置 {valid_count} 个"
             )
         )
         emit_event(
